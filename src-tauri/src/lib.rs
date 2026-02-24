@@ -1,4 +1,4 @@
-use std::process::Command;
+use tauri_plugin_opener::OpenerExt;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -7,19 +7,19 @@ fn greet(name: &str) -> String {
 }
 
 #[tauri::command]
-fn open_app(app: String) {
-    Command::new("cmd")
-        .args(["/C", "start", "", &app])
-        .spawn()
-        .expect("Failed to open app");
+fn open_app(app: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+    app_handle
+        .opener()
+        .open_url(app, None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn open_url(url: String) {
-    Command::new("cmd")
-        .args(["/C", "start", "", &url])
-        .spawn()
-        .expect("Failed to open url");
+fn open_url(url: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+    app_handle
+        .opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
