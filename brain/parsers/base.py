@@ -3,7 +3,7 @@ Base parser interface for Noddy Brain Layer.
 """
 
 from abc import ABC, abstractmethod
-from models import InterpretResponse
+from domain import Intent
 
 
 class BaseParser(ABC):
@@ -12,7 +12,7 @@ class BaseParser(ABC):
     
     Each parser implements:
     - can_parse(text: str) -> bool: Check if this parser can handle the input
-    - parse(text: str) -> InterpretResponse: Parse the input and return structured response
+    - parse(text: str) -> Intent: Parse the input and return structured intent
     """
     
     @abstractmethod
@@ -29,14 +29,14 @@ class BaseParser(ABC):
         pass
     
     @abstractmethod
-    def parse(self, text: str) -> InterpretResponse:
+    def parse(self, text: str) -> Intent:
         """
-        Parse the input and return structured response.
+        Parse the input and return structured intent.
         
         Args:
             text: Original input text (preserves case)
         
         Returns:
-            InterpretResponse with action, value, and confidence
+            Intent with name, payload, confidence, and source
         """
         pass

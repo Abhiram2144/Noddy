@@ -10,7 +10,7 @@ from parsers.base import BaseParser
 from parsers.memory_parser import MemoryParser
 from parsers.search_parser import SearchParser
 from parsers.app_parser import AppParser
-from models import InterpretResponse
+from domain import Intent
 from utils import normalize_input
 from config import get_logger
 
@@ -36,7 +36,7 @@ class ParserRegistry:
             AppParser(),
         ]
     
-    def parse(self, text: str) -> InterpretResponse:
+    def parse(self, text: str) -> Intent:
         """
         Parse input text using the first matching parser.
         
@@ -44,7 +44,7 @@ class ParserRegistry:
             text: User input text
         
         Returns:
-            InterpretResponse with action, value, and confidence
+            Intent with name, payload, confidence, and source
         
         Raises:
             ValueError: If no parser can handle the input
@@ -56,11 +56,11 @@ class ParserRegistry:
             if parser.can_parse(normalized):
                 return parser.parse(text)
         
-        # No parser matched - return unknown action
+        # No parser matched - return unknown intent
         logger.info(f"Parsed: '{text}' → action=unknown (no parser matched)")
-        return InterpretResponse(
-            action="unknown",
-            value=text,
+        return Intent(
+            name="unknown",
+            payload={"text": text},
             confidence=1.0
         )
 
@@ -69,7 +69,7 @@ class ParserRegistry:
 parser_registry = ParserRegistry()
 
 
-def parse_command(text: str) -> InterpretResponse:
+def parse_command(text: str) -> Intent:
     """
     Main entry point for parsing commands.
     
@@ -77,6 +77,6 @@ def parse_command(text: str) -> InterpretResponse:
         text: User input text
     
     Returns:
-        InterpretResponse with action, value, and confidence
+        Intent with name, payload, confidence, and source
     """
     return parser_registry.parse(text)

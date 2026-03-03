@@ -5,7 +5,7 @@ Memory system parser: handles remember, recall, search, and reminder commands.
 import json
 from datetime import datetime, timedelta
 from parsers.base import BaseParser
-from models import InterpretResponse
+from domain import Intent
 from utils import normalize_input
 from config import get_logger
 
@@ -44,7 +44,7 @@ class MemoryParser(BaseParser):
         
         return False
     
-    def parse(self, text: str) -> InterpretResponse:
+    def parse(self, text: str) -> Intent:
         """Parse memory command."""
         normalized = normalize_input(text)
         
@@ -52,9 +52,9 @@ class MemoryParser(BaseParser):
         if normalized.startswith("remember "):
             value = text[9:].strip()  # Preserve original case
             logger.info(f"Parsed: '{text}' → action=remember, value={value}")
-            return InterpretResponse(
-                action="remember",
-                value=value,
+            return Intent(
+                name="remember",
+                payload={"content": value},
                 confidence=1.0
             )
         
@@ -62,9 +62,9 @@ class MemoryParser(BaseParser):
         if normalized in ["recall", "what do you remember", "what do you remember?", 
                           "recall memory", "recall memories", "show memories"]:
             logger.info(f"Parsed: '{text}' → action=recall_memory")
-            return InterpretResponse(
-                action="recall_memory",
-                value="",
+            return Intent(
+                name="recall_memory",
+                payload={},
                 confidence=1.0
             )
         
@@ -72,9 +72,9 @@ class MemoryParser(BaseParser):
         if normalized.startswith("search "):
             keyword = text[7:].strip()
             logger.info(f"Parsed: '{text}' → action=search_memory, value={keyword}")
-            return InterpretResponse(
-                action="search_memory",
-                value=keyword,
+            return Intent(
+                name="search_memory",
+                payload={"keyword": keyword},
                 confidence=1.0
             )
         
@@ -111,14 +111,13 @@ class MemoryParser(BaseParser):
                             pass
                     
                     if trigger_at:
-                        reminder_json = json.dumps({
-                            "content": content,
-                            "trigger_at": trigger_at
-                        })
-                        logger.info(f"Parsed: '{text}' → action=set_reminder, value={reminder_json}")
-                        return InterpretResponse(
-                            action="set_reminder",
-                            value=reminder_json,
+                        logger.info(f"Parsed: '{text}' → action=set_reminder, trigger_at={trigger_at}")
+                        return Intent(
+                            name="set_reminder",
+                            payload={
+                                "content": content,
+                                "trigger_at": trigger_at
+                            },
                             confidence=1.0
                         )
         

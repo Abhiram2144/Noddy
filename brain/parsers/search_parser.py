@@ -6,7 +6,7 @@ In the future, these queries can be delegated to an LLM for more intelligent res
 """
 
 from parsers.base import BaseParser
-from models import InterpretResponse
+from domain import Intent
 from utils import normalize_input, build_google_search_url
 from config import get_logger
 
@@ -41,12 +41,12 @@ class SearchParser(BaseParser):
             or normalized.startswith("find information about ")
         )
     
-    def parse(self, text: str) -> InterpretResponse:
+    def parse(self, text: str) -> Intent:
         """
         Parse web search command.
         
         Future LLM Integration:
-        When LLM_AVAILABLE is True, return action="llm_query" instead of "search_web"
+        When LLM_AVAILABLE is True, return Intent with name="llm_query" instead of "search_web"
         For now, all queries go to Google search.
         """
         normalized = normalize_input(text)
@@ -88,10 +88,11 @@ class SearchParser(BaseParser):
         # Future: Check LLM availability
         # if self.LLM_AVAILABLE:
         #     logger.info(f"Parsed: '{text}' → action=llm_query, value={query}")
-        #     return InterpretResponse(
-        #         action="llm_query",
-        #         value=query,
-        #         confidence=1.0
+        #     return Intent(
+        #         name="llm_query",
+        #         payload={"query": query},
+        #         confidence=1.0,
+        #         source="llm"
         #     )
         
         # Current: Use Google search
@@ -99,8 +100,8 @@ class SearchParser(BaseParser):
         logger.info(f"Parsed: '{text}' → action=search_web, value={search_url}")
         logger.info(f"💡 Future: This query '{query}' will be handled by LLM")
         
-        return InterpretResponse(
-            action="search_web",
-            value=search_url,
+        return Intent(
+            name="search_web",
+            payload={"query": query, "url": search_url},
             confidence=1.0
         )

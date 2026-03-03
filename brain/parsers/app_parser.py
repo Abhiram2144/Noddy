@@ -3,7 +3,7 @@ Application control parser: handles open, list, and kill commands.
 """
 
 from parsers.base import BaseParser
-from models import InterpretResponse
+from domain import Intent
 from utils import normalize_input, build_url
 from config import get_logger
 
@@ -29,16 +29,16 @@ class AppParser(BaseParser):
             or normalized.startswith("kill ")
         )
     
-    def parse(self, text: str) -> InterpretResponse:
+    def parse(self, text: str) -> Intent:
         """Parse app control command."""
         normalized = normalize_input(text)
         
         # "list apps"
         if normalized == "list apps":
             logger.info(f"Parsed: '{text}' → action=list_apps")
-            return InterpretResponse(
-                action="list_apps",
-                value="",
+            return Intent(
+                name="list_apps",
+                payload={},
                 confidence=1.0
             )
         
@@ -52,26 +52,26 @@ class AppParser(BaseParser):
                 search_term = value[:value.lower().rfind(" in web")].strip()
                 url = build_url(search_term.lower())
                 logger.info(f"Parsed: '{text}' → action=open_url, value={url}")
-                return InterpretResponse(
-                    action="open_url",
-                    value=url,
+                return Intent(
+                    name="open_url",
+                    payload={"url": url, "search_term": search_term},
                     confidence=1.0
                 )
             
             # Sub-rule: value is already a URL
             if value.startswith("http://") or value.startswith("https://"):
                 logger.info(f"Parsed: '{text}' → action=open_url, value={value}")
-                return InterpretResponse(
-                    action="open_url",
-                    value=value,
+                return Intent(
+                    name="open_url",
+                    payload={"url": value},
                     confidence=1.0
                 )
             
             # Sub-rule: value is an app name
             logger.info(f"Parsed: '{text}' → action=open_app, value={value}")
-            return InterpretResponse(
-                action="open_app",
-                value=value,
+            return Intent(
+                name="open_app",
+                payload={"target": value},
                 confidence=1.0
             )
         
@@ -79,9 +79,9 @@ class AppParser(BaseParser):
         if normalized.startswith("kill "):
             value = text[5:].strip()
             logger.info(f"Parsed: '{text}' → action=kill_process, value={value}")
-            return InterpretResponse(
-                action="kill_process",
-                value=value,
+            return Intent(
+                name="kill_process",
+                payload={"process": value},
                 confidence=1.0
             )
         

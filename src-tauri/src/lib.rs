@@ -15,6 +15,49 @@ use winreg::RegKey;
 #[cfg(target_os = "windows")]
 use winreg::enums::{HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER};
 
+// ============================================================================
+// Typed Intent Domain Model
+// ============================================================================
+// Represents structured user intents deserialized from Python Brain Layer.
+// Removes stringly-typed action matching in favor of type-safe enum dispatch.
+// ============================================================================
+
+/// Strongly-typed Intent enum matching Python domain model.
+/// Deserializes from JSON with "name" field as discriminator.
+#[derive(Deserialize, Debug)]
+#[serde(tag = "name", content = "payload")]
+enum Intent {
+    #[serde(rename = "remember")]
+    Remember { content: String },
+    
+    #[serde(rename = "recall_memory")]
+    RecallMemory,
+    
+    #[serde(rename = "search_memory")]
+    SearchMemory { keyword: String },
+    
+    #[serde(rename = "set_reminder")]
+    SetReminder { content: String, trigger_at: i64 },
+    
+    #[serde(rename = "search_web")]
+    SearchWeb { url: String },
+    
+    #[serde(rename = "open_app")]
+    OpenApp { target: String },
+    
+    #[serde(rename = "open_url")]
+    OpenUrl { url: String },
+    
+    #[serde(rename = "kill_process")]
+    KillProcess { process: String },
+    
+    #[serde(rename = "list_apps")]
+    ListApps,
+    
+    #[serde(rename = "unknown")]
+    Unknown { text: String },
+}
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -41,8 +84,7 @@ struct MemoryStore {
 #[derive(Deserialize)]
 #[allow(dead_code)]
 struct ActionRequest {
-    action: String,
-    value: String,
+    intent_json: String,  // JSON string deserializable into Intent enum
 }
 
 #[derive(Serialize)]
@@ -944,19 +986,21 @@ fn recall_memories(memory_store: &MemoryStore) -> Result<Vec<String>, String> {
 }
 
 // Main command dispatcher
+// Accepts typed Intent JSON, deserializes to enum, and dispatches safely.
 #[tauri::command]
 fn execute_action(
-    action: String,
-    value: String,
+    intent_json: String,
     app_handle: tauri::AppHandle,
     registry: tauri::State<AppRegistry>,
     memory_store: tauri::State<MemoryStore>,
 ) -> Result<ActionResponse, String> {
-    let action_name = action.as_str();
-    let value_ref = value.as_str();
-
-    let response = match action_name {
-        "list_apps" => {
+    // Deserialize JSON string into typed Intent enum
+    let intent: Intent = serde_json::from_str(&intent_json)
+        .map_err(|e| format!("Invalid intent JSON: {}", e))?;
+    
+    // Type-safe dispatch using enum matching (no string comparisons)
+    let response = match intent {
+        Intent::ListApps => {
             let names = registry.display_names.clone();
             ActionResponse {
                 success: true,
@@ -967,7 +1011,8 @@ fn execute_action(
                 data: Some(names),
             }
         }
-        "open_app" => match open_app_internal(value_ref, &registry) {
+        
+        Intent::OpenApp { target } => match open_app_internal(&target, &registry) {
             Ok(()) => ActionResponse {
                 success: true,
                 message: "Application opened".to_string(),
@@ -977,7 +1022,7 @@ fn execute_action(
                 data: None,
             },
             Err(err) => {
-                let fallback_url = build_fallback_url(value_ref);
+                let fallback_url = build_fallback_url(&target);
                 ActionResponse {
                     success: false,
                     message: format!(
@@ -991,8 +1036,9 @@ fn execute_action(
                 }
             }
         },
-        "open_url" => {
-            if !is_valid_url(value_ref) {
+        
+        Intent::OpenUrl { url } => {
+            if !is_valid_url(&url) {
                 ActionResponse {
                     success: false,
                     message: "Invalid URL".to_string(),
@@ -1002,7 +1048,7 @@ fn execute_action(
                     data: None,
                 }
             } else {
-                match open_url_internal(value_ref, &app_handle) {
+                match open_url_internal(&url, &app_handle) {
                     Ok(()) => ActionResponse {
                         success: true,
                         message: "URL opened".to_string(),
@@ -1022,10 +1068,11 @@ fn execute_action(
                 }
             }
         }
-        "search_web" => {
+        
+        Intent::SearchWeb { url } => {
             // Search web (Google) - URL is already constructed by Brain Layer
             // In future, this will be delegated to LLM instead
-            if !is_valid_url(value_ref) {
+            if !is_valid_url(&url) {
                 ActionResponse {
                     success: false,
                     message: "Invalid search URL".to_string(),
@@ -1035,7 +1082,7 @@ fn execute_action(
                     data: None,
                 }
             } else {
-                match open_url_internal(value_ref, &app_handle) {
+                match open_url_internal(&url, &app_handle) {
                     Ok(()) => ActionResponse {
                         success: true,
                         message: "Searching Google...".to_string(),
@@ -1055,7 +1102,8 @@ fn execute_action(
                 }
             }
         }
-        "kill_process" => match kill_process_internal(value.clone()) {
+        
+        Intent::KillProcess { process } => match kill_process_internal(process) {
             Ok(()) => ActionResponse {
                 success: true,
                 message: "Process terminated".to_string(),
@@ -1073,7 +1121,8 @@ fn execute_action(
                 data: None,
             },
         },
-        "remember" => match save_memory(&memory_store, value_ref) {
+        
+        Intent::Remember { content } => match save_memory(&memory_store, &content) {
             Ok(()) => ActionResponse {
                 success: true,
                 message: "Memory saved.".to_string(),
@@ -1091,7 +1140,8 @@ fn execute_action(
                 data: None,
             },
         },
-        "recall_memory" => match recall_memories(&memory_store) {
+        
+        Intent::RecallMemory => match recall_memories(&memory_store) {
             Ok(memories) => ActionResponse {
                 success: true,
                 message: "Here is what I remember.".to_string(),
@@ -1109,7 +1159,8 @@ fn execute_action(
                 data: None,
             },
         },
-        "search_memory" => match search_memories(&memory_store, value_ref) {
+        
+        Intent::SearchMemory { keyword } => match search_memories(&memory_store, &keyword) {
             Ok(memories) => ActionResponse {
                 success: true,
                 message: format!("Found {} matching memories.", memories.len()),
@@ -1127,27 +1178,35 @@ fn execute_action(
                 data: None,
             },
         },
-        "set_reminder" => match set_reminder(&memory_store, value_ref) {
-            Ok(()) => ActionResponse {
-                success: true,
-                message: "Reminder set successfully.".to_string(),
-                requires_confirmation: false,
-                fallback_action: None,
-                fallback_value: None,
-                data: None,
-            },
-            Err(err) => ActionResponse {
-                success: false,
-                message: format!("Failed to set reminder: {}", err),
-                requires_confirmation: false,
-                fallback_action: None,
-                fallback_value: None,
-                data: None,
-            },
-        },
-        _ => ActionResponse {
+        
+        Intent::SetReminder { content, trigger_at } => {
+            let reminder_json = serde_json::json!({
+                "content": content,
+                "trigger_at": trigger_at
+            }).to_string();
+            match set_reminder(&memory_store, &reminder_json) {
+                Ok(()) => ActionResponse {
+                    success: true,
+                    message: "Reminder set successfully.".to_string(),
+                    requires_confirmation: false,
+                    fallback_action: None,
+                    fallback_value: None,
+                    data: None,
+                },
+                Err(err) => ActionResponse {
+                    success: false,
+                    message: format!("Failed to set reminder: {}", err),
+                    requires_confirmation: false,
+                    fallback_action: None,
+                    fallback_value: None,
+                    data: None,
+                },
+            }
+        }
+        
+        Intent::Unknown { text } => ActionResponse {
             success: false,
-            message: format!("Unknown action: {}", action_name),
+            message: format!("Unknown action: {}", text),
             requires_confirmation: false,
             fallback_action: None,
             fallback_value: None,
@@ -1155,8 +1214,15 @@ fn execute_action(
         },
     };
 
-    log_action(action_name, value_ref, response.success);
+    // Log the dispatched intent for debugging
+    log_intent_dispatch(&intent_json, response.success);
     Ok(response)
+}
+
+/// Helper function to log intent dispatch (for debugging)
+fn log_intent_dispatch(intent_json: &str, success: bool) {
+    let status = if success { "✓" } else { "✗" };
+    println!("{} Intent dispatched: {}", status, intent_json);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

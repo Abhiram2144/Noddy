@@ -131,9 +131,11 @@ function App() {
   const executeCommand = async (action: string, value: string) => {
     setIsLoading(true);
     try {
+      // Convert action/value to typed Intent JSON
+      const intentJson = buildIntentJson(action, value);
+      
       const result = await invoke<ActionResponse>("execute_action", {
-        action,
-        value,
+        intent_json: intentJson,
       });
       setResponse(result);
 
@@ -156,6 +158,58 @@ function App() {
       setConfirmation(false);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const buildIntentJson = (action: string, value: string): string => {
+    /**
+     * Convert action/value from Python Brain to typed Intent JSON for Rust.
+     * Maps InterpretResponse format to Intent enum format.
+     */
+    switch (action) {
+      case "remember":
+        return JSON.stringify({ name: "remember", payload: { content: value } });
+      
+      case "recall_memory":
+        return JSON.stringify({ name: "recall_memory" });
+      
+      case "search_memory":
+        return JSON.stringify({ name: "search_memory", payload: { keyword: value } });
+      
+      case "set_reminder":
+        // value is a JSON string: {"content": "...", "trigger_at": ...}
+        try {
+          const reminderObj = JSON.parse(value);
+          return JSON.stringify({
+            name: "set_reminder",
+            payload: {
+              content: reminderObj.content,
+              trigger_at: reminderObj.trigger_at,
+            },
+          });
+        } catch {
+          console.error("Failed to parse reminder JSON:", value);
+          return JSON.stringify({ name: "unknown", payload: { text: value } });
+        }
+      
+      case "search_web":
+        // value is a URL from Brain
+        return JSON.stringify({ name: "search_web", payload: { url: value } });
+      
+      case "open_app":
+        return JSON.stringify({ name: "open_app", payload: { target: value } });
+      
+      case "open_url":
+        return JSON.stringify({ name: "open_url", payload: { url: value } });
+      
+      case "kill_process":
+        return JSON.stringify({ name: "kill_process", payload: { process: value } });
+      
+      case "list_apps":
+        return JSON.stringify({ name: "list_apps" });
+      
+      default:
+        return JSON.stringify({ name: "unknown", payload: { text: value || action } });
     }
   };
 

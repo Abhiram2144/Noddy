@@ -6,6 +6,8 @@ Architecture:
 - config.py: Logging and configuration
 - models.py: Pydantic request/response models
 - utils.py: Helper functions (normalization, URL building)
+- domain/: Domain models
+  - intent.py: Intent dataclass (internal structured representation)
 - parsers/: Modular parser system
   - base.py: BaseParser interface
   - app_parser.py: Application control (open, list, kill)
@@ -14,14 +16,77 @@ Architecture:
   - __init__.py: Parser registry and orchestration
 """
 
+import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from models import InterpretRequest, InterpretResponse
+from domain import Intent
 from parsers import parse_command
 from config import get_logger
 
 # Initialize logger
 logger = get_logger(__name__)
+
+
+def intent_to_response(intent: Intent) -> InterpretResponse:
+    """
+    Convert internal Intent domain model to external API response.
+    
+    This maintains backward compatibility with the existing API contract
+    while using structured Intent objects internally.
+    
+    Args:
+        intent: Internal Intent object
+    
+    Returns:
+        InterpretResponse for API consumption
+    
+    Conversion Rules:
+        - remember: payload["content"] → value
+        - search_memory: payload["keyword"] → value
+        - set_reminder: entire payload as JSON → value
+        - search_web: payload["url"] → value
+        - open_url: payload["url"] → value
+        - open_app: payload["target"] → value
+        - kill_process: payload["process"] → value
+        - list_apps: "" → value
+        - recall_memory: "" → value
+        - unknown: payload["text"] → value
+    """
+    name = intent.name
+    payload = intent.payload
+    
+    # Extract appropriate value based on intent name
+    if name == "remember":
+        value = payload.get("content", "")
+    elif name == "search_memory":
+        value = payload.get("keyword", "")
+    elif name == "set_reminder":
+        # Keep full JSON for set_reminder (includes content + trigger_at)
+        value = json.dumps(payload)
+    elif name == "search_web":
+        # Return URL for frontend to open
+        value = payload.get("url", "")
+    elif name == "open_url":
+        value = payload.get("url", "")
+    elif name == "open_app":
+        value = payload.get("target", "")
+    elif name == "kill_process":
+        value = payload.get("process", "")
+    elif name in ("list_apps", "recall_memory"):
+        value = ""
+    elif name == "unknown":
+        value = payload.get("text", "")
+    else:
+        # Fallback: serialize entire payload
+        value = json.dumps(payload)
+    
+    return InterpretResponse(
+        action=name,
+        value=value,
+        confidence=intent.confidence
+    )
+
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -66,6 +131,15 @@ async def interpret(request: InterpretRequest) -> InterpretResponse:
     - "google machine learning" → {"action": "search_web", "value": "https://www.google.com/search?q=machine+learning"}
     
     Note: Web search queries will be handled by LLM in future versions.
+    
+    Internal Architecture:
+    1. parse_command(text) → Intent (structured domain model)
+    2. intent_to_response(intent) → InterpretResponse (API response)
+    
+    This separation allows for:
+    - Clean domain modeling internally
+    - Backward-compatible API externally
+    - Future LLM integration without breaking changes
     """
     # Validate input
     if not request.text or not request.text.strip():
@@ -75,8 +149,12 @@ async def interpret(request: InterpretRequest) -> InterpretResponse:
     # Log incoming request
     logger.info(f"Received: '{request.text}'")
     
-    # Parse and return response
-    response = parse_command(request.text)
+    # Parse to Intent (internal domain model)
+    intent = parse_command(request.text)
+    
+    # Convert Intent → InterpretResponse (external API)
+    response = intent_to_response(intent)
+    
     return response
 
 
