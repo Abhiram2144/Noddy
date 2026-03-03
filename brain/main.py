@@ -15,6 +15,7 @@ Architecture:
 """
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from models import InterpretRequest, InterpretResponse
 from parsers import parse_command
 from config import get_logger
@@ -27,6 +28,15 @@ app = FastAPI(
     title="Noddy Brain",
     description="Modular intent interpreter for Noddy desktop assistant",
     version="0.2.0"
+)
+
+# Add CORS middleware to allow requests from Tauri frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:1420", "http://127.0.0.1:1420"],  # Tauri dev server
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, OPTIONS, etc.)
+    allow_headers=["*"],  # Allow all headers
 )
 
 
