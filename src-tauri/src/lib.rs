@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri_plugin_opener::OpenerExt;
+use tauri::Manager;
+use rusqlite::{Connection, params};
+use std::sync::Mutex;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -29,6 +32,10 @@ struct InstalledApp {
 struct AppRegistry {
     apps: HashMap<String, String>,
     display_names: Vec<String>,
+}
+
+struct MemoryStore {
+    conn: Mutex<Connection>,
 }
 
 #[derive(Deserialize)]
@@ -825,6 +832,117 @@ fn log_action(action: &str, value: &str, success: bool) {
     );
 }
 
+// Memory operations
+fn save_memory(memory_store: &MemoryStore, content: &str) -> Result<(), String> {
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
+    
+    conn.execute(
+        "INSERT INTO memories (content, created_at, expires_at) VALUES (?1, ?2, NULL)",
+        params![content, timestamp],
+    )
+    .map_err(|e| format!("Database error: {}", e))?;
+    
+    Ok(())
+}
+
+fn search_memories(memory_store: &MemoryStore, keyword: &str) -> Result<Vec<String>, String> {
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    
+    let search_pattern = format!("%{}%", keyword);
+    let mut stmt = conn
+        .prepare("SELECT content FROM memories WHERE content LIKE ?1 ORDER BY created_at DESC LIMIT 10")
+        .map_err(|e| format!("Database error: {}", e))?;
+    
+    let memories = stmt
+        .query_map(params![search_pattern], |row| row.get(0))
+        .map_err(|e| format!("Query error: {}", e))?
+        .collect::<Result<Vec<String>, _>>()
+        .map_err(|e| format!("Row mapping error: {}", e))?;
+    
+    Ok(memories)
+}
+
+fn set_reminder(memory_store: &MemoryStore, json_value: &str) -> Result<(), String> {
+    // Parse JSON
+    let parsed: serde_json::Value = serde_json::from_str(json_value)
+        .map_err(|e| format!("Invalid JSON: {}", e))?;
+    
+    let content = parsed["content"]
+        .as_str()
+        .ok_or("Missing 'content' field")?;
+    
+    let trigger_at = parsed["trigger_at"]
+        .as_i64()
+        .ok_or("Missing or invalid 'trigger_at' field")?;
+    
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
+    
+    conn.execute(
+        "INSERT INTO memories (content, created_at, expires_at) VALUES (?1, ?2, ?3)",
+        params![content, created_at, trigger_at],
+    )
+    .map_err(|e| format!("Database error: {}", e))?;
+    
+    Ok(())
+}
+
+fn check_expired_reminders(memory_store: &MemoryStore) -> Result<(), String> {
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    
+    let current_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
+    
+    // Query expired reminders
+    let mut stmt = conn
+        .prepare("SELECT id, content FROM memories WHERE expires_at IS NOT NULL AND expires_at <= ?1")
+        .map_err(|e| format!("Database error: {}", e))?;
+    
+    let expired: Vec<(i64, String)> = stmt
+        .query_map(params![current_time], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .map_err(|e| format!("Query error: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Row mapping error: {}", e))?;
+    
+    // Process each expired reminder
+    for (id, content) in expired {
+        println!("🔔 REMINDER: {}", content);
+        
+        // Delete the reminder
+        conn.execute("DELETE FROM memories WHERE id = ?1", params![id])
+            .map_err(|e| format!("Failed to delete reminder: {}", e))?;
+    }
+    
+    Ok(())
+}
+
+fn recall_memories(memory_store: &MemoryStore) -> Result<Vec<String>, String> {
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    
+    let mut stmt = conn
+        .prepare("SELECT content FROM memories ORDER BY created_at DESC LIMIT 10")
+        .map_err(|e| format!("Database error: {}", e))?;
+    
+    let memories = stmt
+        .query_map([], |row| row.get(0))
+        .map_err(|e| format!("Query error: {}", e))?
+        .collect::<Result<Vec<String>, _>>()
+        .map_err(|e| format!("Row mapping error: {}", e))?;
+    
+    Ok(memories)
+}
+
 // Main command dispatcher
 #[tauri::command]
 fn execute_action(
@@ -832,6 +950,7 @@ fn execute_action(
     value: String,
     app_handle: tauri::AppHandle,
     registry: tauri::State<AppRegistry>,
+    memory_store: tauri::State<MemoryStore>,
 ) -> Result<ActionResponse, String> {
     let action_name = action.as_str();
     let value_ref = value.as_str();
@@ -903,6 +1022,39 @@ fn execute_action(
                 }
             }
         }
+        "search_web" => {
+            // Search web (Google) - URL is already constructed by Brain Layer
+            // In future, this will be delegated to LLM instead
+            if !is_valid_url(value_ref) {
+                ActionResponse {
+                    success: false,
+                    message: "Invalid search URL".to_string(),
+                    requires_confirmation: false,
+                    fallback_action: None,
+                    fallback_value: None,
+                    data: None,
+                }
+            } else {
+                match open_url_internal(value_ref, &app_handle) {
+                    Ok(()) => ActionResponse {
+                        success: true,
+                        message: "Searching Google...".to_string(),
+                        requires_confirmation: false,
+                        fallback_action: None,
+                        fallback_value: None,
+                        data: None,
+                    },
+                    Err(err) => ActionResponse {
+                        success: false,
+                        message: format!("Failed to open search: {}", err),
+                        requires_confirmation: false,
+                        fallback_action: None,
+                        fallback_value: None,
+                        data: None,
+                    },
+                }
+            }
+        }
         "kill_process" => match kill_process_internal(value.clone()) {
             Ok(()) => ActionResponse {
                 success: true,
@@ -915,6 +1067,78 @@ fn execute_action(
             Err(err) => ActionResponse {
                 success: false,
                 message: format!("Failed to terminate process: {}", err),
+                requires_confirmation: false,
+                fallback_action: None,
+                fallback_value: None,
+                data: None,
+            },
+        },
+        "remember" => match save_memory(&memory_store, value_ref) {
+            Ok(()) => ActionResponse {
+                success: true,
+                message: "Memory saved.".to_string(),
+                requires_confirmation: false,
+                fallback_action: None,
+                fallback_value: None,
+                data: None,
+            },
+            Err(err) => ActionResponse {
+                success: false,
+                message: format!("Failed to save memory: {}", err),
+                requires_confirmation: false,
+                fallback_action: None,
+                fallback_value: None,
+                data: None,
+            },
+        },
+        "recall_memory" => match recall_memories(&memory_store) {
+            Ok(memories) => ActionResponse {
+                success: true,
+                message: "Here is what I remember.".to_string(),
+                requires_confirmation: false,
+                fallback_action: None,
+                fallback_value: None,
+                data: Some(memories),
+            },
+            Err(err) => ActionResponse {
+                success: false,
+                message: format!("Failed to recall memories: {}", err),
+                requires_confirmation: false,
+                fallback_action: None,
+                fallback_value: None,
+                data: None,
+            },
+        },
+        "search_memory" => match search_memories(&memory_store, value_ref) {
+            Ok(memories) => ActionResponse {
+                success: true,
+                message: format!("Found {} matching memories.", memories.len()),
+                requires_confirmation: false,
+                fallback_action: None,
+                fallback_value: None,
+                data: Some(memories),
+            },
+            Err(err) => ActionResponse {
+                success: false,
+                message: format!("Failed to search memories: {}", err),
+                requires_confirmation: false,
+                fallback_action: None,
+                fallback_value: None,
+                data: None,
+            },
+        },
+        "set_reminder" => match set_reminder(&memory_store, value_ref) {
+            Ok(()) => ActionResponse {
+                success: true,
+                message: "Reminder set successfully.".to_string(),
+                requires_confirmation: false,
+                fallback_action: None,
+                fallback_value: None,
+                data: None,
+            },
+            Err(err) => ActionResponse {
+                success: false,
+                message: format!("Failed to set reminder: {}", err),
                 requires_confirmation: false,
                 fallback_action: None,
                 fallback_value: None,
@@ -988,6 +1212,74 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(registry)
+        .setup(move |app| {
+            // Initialize memory database in app data directory
+            let app_data_dir = app.path().app_data_dir().unwrap_or_else(|_| {
+                // Fallback to temp directory if app_data_dir fails
+                std::env::temp_dir()
+            });
+            
+            // Create app data directory if it doesn't exist
+            std::fs::create_dir_all(&app_data_dir).ok();
+            
+            let db_path = app_data_dir.join("noddy.db");
+            
+            let conn = Connection::open(&db_path)
+                .expect("Failed to open database");
+            
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER
+                )",
+                [],
+            )
+            .expect("Failed to create memories table");
+            
+            // Check if expires_at column exists (for existing databases)
+            let column_exists: Result<i64, _> = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name='expires_at'",
+                [],
+                |row| row.get(0),
+            );
+            
+            if let Ok(0) = column_exists {
+                // Column doesn't exist, add it
+                conn.execute("ALTER TABLE memories ADD COLUMN expires_at INTEGER", [])
+                    .expect("Failed to add expires_at column");
+                println!("✓ Added expires_at column to memories table");
+            }
+            
+            println!("✓ Memory database initialized: {}", db_path.display());
+            
+            let memory_store = MemoryStore {
+                conn: Mutex::new(conn),
+            };
+            
+            // Clone memory store for background thread
+            let db_path_clone = db_path.clone();
+            let memory_store_clone = MemoryStore {
+                conn: Mutex::new(Connection::open(&db_path_clone).expect("Failed to open database for reminder thread")),
+            };
+            
+            // Spawn background reminder checker thread
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                    
+                    if let Err(e) = check_expired_reminders(&memory_store_clone) {
+                        eprintln!("⚠️  Reminder check failed: {}", e);
+                    }
+                }
+            });
+            
+            println!("✓ Background reminder checker started");
+            
+            app.manage(memory_store);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![greet, execute_action])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

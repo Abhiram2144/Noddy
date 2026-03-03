@@ -1,15 +1,17 @@
 """
-Test cases for Noddy Brain intent parser.
+Test cases for Noddy Brain intent parser - Modular Architecture.
 Run with: python -m pytest test_parser.py -v
+Or: python test_parser.py
 """
 
 import sys
 from pathlib import Path
 
-# Add parent directory to path to import main
+# Add parent directory to path to import modules
 sys.path.insert(0, str(Path(__file__).parent))
 
-from main import parse_command, InterpretResponse
+from parsers import parse_command
+from models import InterpretResponse
 
 
 def test_list_apps():
@@ -122,6 +124,172 @@ def test_priority_url_over_app():
     result = parse_command("open https://discord.com")
     assert result.action == "open_url"
     assert result.value == "https://discord.com"
+
+
+def test_remember_command():
+    """Test 'remember <content>' command"""
+    result = parse_command("remember buy milk")
+    assert result.action == "remember"
+    assert result.value == "buy milk"
+
+
+def test_remember_preserves_case():
+    """Test that remember preserves original case"""
+    result = parse_command("remember Meeting with Sarah at 3pm")
+    assert result.action == "remember"
+    assert result.value == "Meeting with Sarah at 3pm"
+
+
+def test_recall_command():
+    """Test 'recall' command"""
+    result = parse_command("recall")
+    assert result.action == "recall_memory"
+    assert result.value == ""
+
+
+def test_recall_variants():
+    """Test various recall command phrasings"""
+    variants = [
+        "what do you remember",
+        "What do you remember?",
+        "recall memory",
+        "recall memories",
+        "show memories"
+    ]
+    for variant in variants:
+        result = parse_command(variant)
+        assert result.action == "recall_memory", f"Failed for: {variant}"
+        assert result.value == ""
+
+
+def test_search_memory():
+    """Test 'search <keyword>' command"""
+    result = parse_command("search meeting")
+    assert result.action == "search_memory"
+    assert result.value == "meeting"
+
+
+def test_search_memory_preserves_case():
+    """Test that search preserves keyword case"""
+    result = parse_command("search Project Alpha")
+    assert result.action == "search_memory"
+    assert result.value == "Project Alpha"
+
+
+def test_set_reminder_minutes():
+    """Test 'remind me to <X> in <minutes>' command"""
+    result = parse_command("remind me to call mom in 30 minutes")
+    assert result.action == "set_reminder"
+    # Value should be valid JSON with content and trigger_at
+    import json
+    parsed = json.loads(result.value)
+    assert "content" in parsed
+    assert "trigger_at" in parsed
+    assert parsed["content"] == "call mom"
+    assert isinstance(parsed["trigger_at"], int)
+
+
+def test_set_reminder_hours():
+    """Test 'remind me to <X> in <hours>' command"""
+    result = parse_command("remind me to submit report in 2 hours")
+    assert result.action == "set_reminder"
+    import json
+    parsed = json.loads(result.value)
+    assert parsed["content"] == "submit report"
+
+
+def test_set_reminder_days():
+    """Test 'remind me to <X> in <days>' command"""
+    result = parse_command("remind me to pay bills in 5 days")
+    assert result.action == "set_reminder"
+    import json
+    parsed = json.loads(result.value)
+    assert parsed["content"] == "pay bills"
+
+
+# ===== Web Search Tests (NEW) =====
+
+def test_what_is_query():
+    """Test 'what is <X>' command"""
+    result = parse_command("what is Python")
+    assert result.action == "search_web"
+    assert "google.com/search" in result.value
+    assert "Python" in result.value or "python" in result.value.lower()
+
+
+def test_what_is_case_insensitive():
+    """Test 'what is' is case insensitive"""
+    result = parse_command("What is Machine Learning")
+    assert result.action == "search_web"
+    assert "google.com/search" in result.value
+
+
+def test_whats_query():
+    """Test 'what's <X>' command"""
+    result = parse_command("what's artificial intelligence")
+    assert result.action == "search_web"
+    assert "google.com/search" in result.value
+    assert "artificial" in result.value.lower()
+
+
+def test_search_about_in_web():
+    """Test 'search about <X> in web' command"""
+    result = parse_command("search about quantum computing in web")
+    assert result.action == "search_web"
+    assert "google.com/search" in result.value
+    assert "quantum" in result.value.lower()
+
+
+def test_search_about_on_web():
+    """Test 'search about <X> on web' command"""
+    result = parse_command("search about blockchain on web")
+    assert result.action == "search_web"
+    assert "google.com/search" in result.value
+
+
+def test_search_for_on_google():
+    """Test 'search for <X> on google' command"""
+    result = parse_command("search for machine learning on google")
+    assert result.action == "search_web"
+    assert "google.com/search" in result.value
+
+
+def test_google_query():
+    """Test 'google <X>' command"""
+    result = parse_command("google rust programming")
+    assert result.action == "search_web"
+    assert "google.com/search" in result.value
+    assert "rust" in result.value.lower()
+
+
+def test_look_up_query():
+    """Test 'look up <X>' command"""
+    result = parse_command("look up neural networks")
+    assert result.action == "search_web"
+    assert "google.com/search" in result.value
+
+
+def test_find_information_query():
+    """Test 'find information about <X>' command"""
+    result = parse_command("find information about climate change")
+    assert result.action == "search_web"
+    assert "google.com/search" in result.value
+
+
+def test_search_query_url_encoding():
+    """Test that search queries with spaces are properly URL encoded"""
+    result = parse_command("what is machine learning")
+    assert result.action == "search_web"
+    # URL should have encoded spaces (either + or %20)
+    assert "google.com/search" in result.value
+    assert ("machine+learning" in result.value or "machine%20learning" in result.value)
+
+
+def test_search_vs_memory_search_priority():
+    """Test that 'search <X>' goes to memory_parser, not search_parser"""
+    result = parse_command("search meeting")
+    assert result.action == "search_memory"  # Should be memory search, not web search
+    assert result.value == "meeting"
 
 
 if __name__ == "__main__":

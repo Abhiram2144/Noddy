@@ -63,6 +63,44 @@ function App() {
       return { action: "list_apps", value: "" };
     }
 
+    if (trimmed.startsWith("remember ")) {
+      const value = cmd.slice(9).trim();
+      return { action: "remember", value };
+    }
+
+    if (["recall", "what do you remember", "what do you remember?", 
+         "recall memory", "recall memories", "show memories"].includes(trimmed)) {
+      return { action: "recall_memory", value: "" };
+    }
+
+    if (trimmed.startsWith("search ")) {
+      const keyword = cmd.slice(7).trim();
+      return { action: "search_memory", value: keyword };
+    }
+
+    if (trimmed.startsWith("remind me to ")) {
+      // Simple fallback - just pass the whole command as value
+      // Brain will handle the parsing properly
+      console.warn("Brain unavailable - reminder parsing may fail");
+      return { action: "set_reminder", value: cmd };
+    }
+
+    if (trimmed.startsWith("what is ") || trimmed.startsWith("what's ")) {
+      const query = trimmed.startsWith("what is ") ? cmd.slice(8).trim() : cmd.slice(7).trim();
+      const encoded = encodeURIComponent(query);
+      const url = `https://www.google.com/search?q=${encoded}`;
+      console.warn(`Brain unavailable - using fallback Google search: ${url}`);
+      return { action: "search_web", value: url };
+    }
+
+    if (trimmed.startsWith("google ") || trimmed.startsWith("look up ")) {
+      const query = trimmed.startsWith("google ") ? cmd.slice(7).trim() : cmd.slice(8).trim();
+      const encoded = encodeURIComponent(query);
+      const url = `https://www.google.com/search?q=${encoded}`;
+      console.warn(`Brain unavailable - using fallback Google search: ${url}`);
+      return { action: "search_web", value: url };
+    }
+
     if (trimmed.startsWith("open ")) {
       const value = cmd.slice(5).trim();
       
@@ -127,7 +165,7 @@ function App() {
     if (!parsed) {
       setResponse({
         success: false,
-        message: 'Invalid command. Try: "open chrome", "open youtube in web", "kill chrome.exe", "list apps"',
+        message: 'Invalid command. Try: "open chrome", "remember X", "recall", "search X", "remind me to X in Y", "what is X"',
         requires_confirmation: false,
         fallback_action: null,
         fallback_value: null,
@@ -172,7 +210,7 @@ function App() {
             value={command}
             onChange={(e) => setCommand(e.target.value)}
             onKeyPress={(e) => e.key === "Enter" && handleRun()}
-            placeholder="e.g., open chrome, open youtube in web, kill notepad.exe, list apps"
+            placeholder="e.g., open chrome, remember X, recall, search X, remind me to X in Y, what is X"
             style={{
               width: "100%",
               padding: "8px",
