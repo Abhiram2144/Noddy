@@ -135,7 +135,7 @@ function App() {
       const intentJson = buildIntentJson(action, value);
       
       const result = await invoke<ActionResponse>("execute_action", {
-        intent_json: intentJson,
+        intentJson: intentJson,  // Tauri converts Rust intent_json → camelCase intentJson
       });
       setResponse(result);
 
@@ -225,14 +225,17 @@ function App() {
         fallback_value: null,
         data: null,
       });
+      setCommand("");  // Clear input on invalid command
       return;
     }
     executeCommand(parsed.action, parsed.value);
+    setCommand("");  // Clear input after executing command
   };
 
   const handleConfirmYes = () => {
     if (fallbackAction && fallbackValue) {
       executeCommand(fallbackAction, fallbackValue);
+      setCommand("");  // Clear input after executing fallback
     }
     setConfirmation(false);
   };
