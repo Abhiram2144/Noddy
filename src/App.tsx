@@ -19,7 +19,44 @@ function App() {
   const [fallbackValue, setFallbackValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
-  const parseCommand = (cmd: string): { action: string; value: string } | null => {
+  const parseCommand = async (cmd: string): Promise<{ action: string; value: string } | null> => {
+    const trimmed = cmd.trim();
+    
+    if (!trimmed) {
+      return null;
+    }
+
+    try {
+      // Send to Python Brain for intent interpretation
+      const response = await fetch("http://127.0.0.1:8000/interpret", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ text: trimmed }),
+      });
+
+      if (!response.ok) {
+        console.error("Brain API error:", response.status);
+        return null;
+      }
+
+      const data = await response.json();
+      
+      // If action is unknown, treat as invalid command
+      if (data.action === "unknown") {
+        return null;
+      }
+
+      return { action: data.action, value: data.value };
+    } catch (error) {
+      console.error("Failed to connect to Brain API:", error);
+      // Fallback to simple local parsing if Brain is unavailable
+      return parseFallback(cmd);
+    }
+  };
+
+  const parseFallback = (cmd: string): { action: string; value: string } | null => {
     const trimmed = cmd.trim().toLowerCase();
 
     if (trimmed === "list apps") {
@@ -29,16 +66,13 @@ function App() {
     if (trimmed.startsWith("open ")) {
       const value = cmd.slice(5).trim();
       
-      // Check for "open X in chrome" pattern
-      const inChromeMatch = value.match(/^(.+?)\s+in\s+chrome$/i);
-      if (inChromeMatch) {
-        const searchTerm = inChromeMatch[1].trim();
-        let url: string;
-        if (searchTerm === "youtube") {
-          url = "https://www.youtube.com";
-        } else {
-          url = `https://www.${searchTerm}.com`;
-        }
+      // Check for "open X in web" pattern - build URL locally if Brain is unavailable
+      const inWebMatch = value.match(/^(.+?)\s+in\s+web$/i);
+      if (inWebMatch) {
+        const searchTerm = inWebMatch[1].trim();
+        // Simple URL building as fallback (Brain does DNS lookup for better results)
+        const url = `https://www.${searchTerm.toLowerCase()}.com`;
+        console.warn(`Brain unavailable - using fallback URL: ${url}`);
         return { action: "open_url", value: url };
       }
       
@@ -87,13 +121,13 @@ function App() {
     }
   };
 
-  const handleRun = () => {
+  const handleRun = async () => {
     if (!command.trim()) return;
-    const parsed = parseCommand(command);
+    const parsed = await parseCommand(command);
     if (!parsed) {
       setResponse({
         success: false,
-        message: 'Invalid command. Try: "open chrome", "open youtube in chrome", "kill chrome.exe", "list apps"',
+        message: 'Invalid command. Try: "open chrome", "open youtube in web", "kill chrome.exe", "list apps"',
         requires_confirmation: false,
         fallback_action: null,
         fallback_value: null,
@@ -138,7 +172,7 @@ function App() {
             value={command}
             onChange={(e) => setCommand(e.target.value)}
             onKeyPress={(e) => e.key === "Enter" && handleRun()}
-            placeholder="e.g., open chrome, open youtube, kill notepad.exe, list apps"
+            placeholder="e.g., open chrome, open youtube in web, kill notepad.exe, list apps"
             style={{
               width: "100%",
               padding: "8px",
