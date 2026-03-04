@@ -58,6 +58,284 @@ enum Intent {
     Unknown { text: String },
 }
 
+// ============================================================================
+// INFRASTRUCTURE LAYER 1: INTERNAL EVENT BUS
+// ============================================================================
+// Allows decoupled components to publish and subscribe to system events.
+// Future: Can be extended for telemetry, sync, notifications.
+// ============================================================================
+
+#[derive(Debug, Clone)]
+enum Event {
+    IntentReceived(String),      // intent_json
+    IntentExecuted(String),      // intent_json
+    MemorySaved(String),         // content
+    ReminderScheduled(String),   // reminder_json
+    ReminderTriggered(String),   // reminder_content
+    ErrorOccurred(String),       // error_message
+}
+
+#[derive(Clone)]
+struct EventBus {
+    subscribers: std::sync::Arc<std::sync::Mutex<Vec<Box<dyn Fn(&Event) + Send + Sync>>>>,
+}
+
+impl EventBus {
+    fn new() -> Self {
+        EventBus {
+            subscribers: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+    
+    fn register<F: Fn(&Event) + Send + Sync + 'static>(&self, listener: F) {
+        if let Ok(mut subs) = self.subscribers.lock() {
+            subs.push(Box::new(listener));
+        }
+    }
+    
+    fn emit(&self, event: &Event) {
+        if let Ok(subs) = self.subscribers.lock() {
+            for listener in subs.iter() {
+                listener(event);
+            }
+        }
+    }
+}
+
+// Structured telemetry subscriber: Converts events to JSON logs
+fn create_telemetry_subscriber() -> impl Fn(&Event) + Send + Sync + 'static {
+    move |event: &Event| {
+        let telemetry = TelemetryEvent::from_event(event);
+        // Log as structured JSON
+        if let Ok(json) = serde_json::to_string(&serde_json::json!({
+            "event_type": telemetry.event_type,
+            "timestamp": telemetry.timestamp,
+            "metadata": telemetry.metadata,
+        })) {
+            println!("[TELEMETRY] {}", json);
+        }
+    }
+}
+
+// ============================================================================
+// INFRASTRUCTURE LAYER 2: CAPABILITY PERMISSION LAYER
+// ============================================================================
+// Defines what actions are allowed (future: safe mode, plugin restrictions).
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Capability {
+    OpenApp,
+    KillProcess,
+    WebSearch,
+    MemoryRead,
+    MemoryWrite,
+    ReminderSchedule,
+}
+
+#[derive(Clone)]
+struct PermissionManager {
+    allowed: std::collections::HashSet<Capability>,
+}
+
+impl PermissionManager {
+    fn default_permissions() -> Self {
+        let mut allowed = std::collections::HashSet::new();
+        // Default: all capabilities allowed
+        allowed.insert(Capability::OpenApp);
+        allowed.insert(Capability::KillProcess);
+        allowed.insert(Capability::WebSearch);
+        allowed.insert(Capability::MemoryRead);
+        allowed.insert(Capability::MemoryWrite);
+        allowed.insert(Capability::ReminderSchedule);
+        
+        PermissionManager { allowed }
+    }
+    
+    fn allows(&self, capability: Capability) -> bool {
+        self.allowed.contains(&capability)
+    }
+    
+    fn check_permission(&self, capability: Capability) -> Result<(), String> {
+        if self.allows(capability) {
+            Ok(())
+        } else {
+            Err(format!("Permission denied for capability: {:?}", capability))
+        }
+    }
+}
+
+// ============================================================================
+// INFRASTRUCTURE LAYER 3: REPOSITORY ABSTRACTION
+// ============================================================================
+// Trait-based memory storage allows different backends (SQLite, Cloud, etc)
+// ============================================================================
+
+trait MemoryRepository: Send + Sync {
+    fn save(&self, content: String) -> Result<(), String>;
+    fn recall(&self) -> Result<Vec<String>, String>;
+    fn search(&self, keyword: String) -> Result<Vec<String>, String>;
+}
+
+struct SQLiteMemoryRepository {
+    conn: std::sync::Arc<Mutex<Connection>>,
+}
+
+impl SQLiteMemoryRepository {
+    fn new(conn: std::sync::Arc<Mutex<Connection>>) -> Self {
+        SQLiteMemoryRepository { conn }
+    }
+}
+
+impl MemoryRepository for SQLiteMemoryRepository {
+    fn save(&self, content: String) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0) as i64;
+        
+        conn.execute(
+            "INSERT INTO memories (content, created_at, expires_at) VALUES (?1, ?2, NULL)",
+            params![content, timestamp],
+        )
+        .map_err(|e| format!("Database error: {}", e))?;
+        
+        Ok(())
+    }
+    
+    fn recall(&self) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        
+        let mut stmt = conn
+            .prepare("SELECT content FROM memories ORDER BY created_at DESC LIMIT 10")
+            .map_err(|e| format!("Database error: {}", e))?;
+        
+        let memories = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|e| format!("Query error: {}", e))?
+            .collect::<Result<Vec<String>, _>>()
+            .map_err(|e| format!("Row mapping error: {}", e))?;
+        
+        Ok(memories)
+    }
+    
+    fn search(&self, keyword: String) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        
+        let search_pattern = format!("%{}%", keyword);
+        let mut stmt = conn
+            .prepare("SELECT content FROM memories WHERE content LIKE ?1 ORDER BY created_at DESC LIMIT 10")
+            .map_err(|e| format!("Database error: {}", e))?;
+        
+        let memories = stmt
+            .query_map(params![search_pattern], |row| row.get(0))
+            .map_err(|e| format!("Query error: {}", e))?
+            .collect::<Result<Vec<String>, _>>()
+            .map_err(|e| format!("Row mapping error: {}", e))?;
+        
+        Ok(memories)
+    }
+}
+
+// ============================================================================
+// INFRASTRUCTURE LAYER 4: SCHEDULER ABSTRACTION
+// ============================================================================
+// Allows different reminder scheduling backends (polling, cron, OS-native)
+// ============================================================================
+
+trait Scheduler: Send + Sync {
+    fn schedule(&self, timestamp: i64, content: String) -> Result<(), String>;
+}
+
+struct PollingScheduler {
+    conn: std::sync::Arc<Mutex<Connection>>,
+}
+
+impl PollingScheduler {
+    fn new(conn: std::sync::Arc<Mutex<Connection>>) -> Self {
+        PollingScheduler { conn }
+    }
+}
+
+impl Scheduler for PollingScheduler {
+    fn schedule(&self, timestamp: i64, content: String) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let created_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0) as i64;
+        
+        conn.execute(
+            "INSERT INTO memories (content, created_at, expires_at) VALUES (?1, ?2, ?3)",
+            params![content, created_at, timestamp],
+        )
+        .map_err(|e| format!("Database error: {}", e))?;
+        
+        Ok(())
+    }
+}
+
+// ============================================================================
+// INFRASTRUCTURE LAYER 5: STRUCTURED TELEMETRY
+// ============================================================================
+// Structured event logging for observability and debugging
+// ============================================================================
+
+struct TelemetryEvent {
+    event_type: String,
+    timestamp: i64,
+    metadata: HashMap<String, String>,
+}
+
+impl TelemetryEvent {
+    fn from_event(event: &Event) -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0) as i64;
+        
+        let (event_type, metadata) = match event {
+            Event::IntentReceived(json) => {
+                let mut m = HashMap::new();
+                m.insert("intent_json".to_string(), json.clone());
+                ("IntentReceived".to_string(), m)
+            }
+            Event::IntentExecuted(json) => {
+                let mut m = HashMap::new();
+                m.insert("intent_json".to_string(), json.clone());
+                ("IntentExecuted".to_string(), m)
+            }
+            Event::MemorySaved(content) => {
+                let mut m = HashMap::new();
+                m.insert("size_bytes".to_string(), content.len().to_string());
+                ("MemorySaved".to_string(), m)
+            }
+            Event::ReminderScheduled(json) => {
+                let mut m = HashMap::new();
+                m.insert("reminder_json".to_string(), json.clone());
+                ("ReminderScheduled".to_string(), m)
+            }
+            Event::ReminderTriggered(content) => {
+                let mut m = HashMap::new();
+                m.insert("content".to_string(), content.clone());
+                ("ReminderTriggered".to_string(), m)
+            }
+            Event::ErrorOccurred(msg) => {
+                let mut m = HashMap::new();
+                m.insert("error_message".to_string(), msg.clone());
+                ("ErrorOccurred".to_string(), m)
+            }
+        };
+        
+        TelemetryEvent {
+            event_type,
+            timestamp,
+            metadata,
+        }
+    }
+}
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -985,7 +1263,7 @@ fn recall_memories(memory_store: &MemoryStore) -> Result<Vec<String>, String> {
     Ok(memories)
 }
 
-// Main command dispatcher
+// Main command dispatcher with event emission and permission enforcement
 // Accepts typed Intent JSON, deserializes to enum, and dispatches safely.
 #[tauri::command]
 fn execute_action(
@@ -993,15 +1271,27 @@ fn execute_action(
     app_handle: tauri::AppHandle,
     registry: tauri::State<AppRegistry>,
     memory_store: tauri::State<MemoryStore>,
+    event_bus: tauri::State<EventBus>,
+    permissions: tauri::State<PermissionManager>,
 ) -> Result<ActionResponse, String> {
+    let start_time = SystemTime::now();
+    
     // Deserialize JSON string into typed Intent enum
     let intent: Intent = serde_json::from_str(&intent_json)
-        .map_err(|e| format!("Invalid intent JSON: {}", e))?;
+        .map_err(|e| {
+            let error_msg = format!("Invalid intent JSON: {}", e);
+            event_bus.emit(&Event::ErrorOccurred(error_msg.clone()));
+            error_msg
+        })?;
+    
+    // Emit IntentReceived event
+    event_bus.emit(&Event::IntentReceived(intent_json.clone()));
     
     // Type-safe dispatch using enum matching (no string comparisons)
     let response = match intent {
         Intent::ListApps => {
             let names = registry.display_names.clone();
+            event_bus.emit(&Event::IntentExecuted("list_apps".to_string()));
             ActionResponse {
                 success: true,
                 message: "Installed apps listed".to_string(),
@@ -1012,33 +1302,66 @@ fn execute_action(
             }
         }
         
-        Intent::OpenApp { target } => match open_app_internal(&target, &registry) {
-            Ok(()) => ActionResponse {
-                success: true,
-                message: "Application opened".to_string(),
-                requires_confirmation: false,
-                fallback_action: None,
-                fallback_value: None,
-                data: None,
-            },
-            Err(err) => {
-                let fallback_url = build_fallback_url(&target);
-                ActionResponse {
+        Intent::OpenApp { target } => {
+            // Check permission before executing
+            if let Err(perm_err) = permissions.check_permission(Capability::OpenApp) {
+                event_bus.emit(&Event::ErrorOccurred(perm_err.clone()));
+                return Ok(ActionResponse {
                     success: false,
-                    message: format!(
-                        "App not found. Should I open this in Chrome? ({})",
-                        err
-                    ),
-                    requires_confirmation: true,
-                    fallback_action: Some("open_url".to_string()),
-                    fallback_value: Some(fallback_url),
+                    message: perm_err,
+                    requires_confirmation: false,
+                    fallback_action: None,
+                    fallback_value: None,
                     data: None,
+                });
+            }
+            
+            match open_app_internal(&target, &registry) {
+                Ok(()) => {
+                    event_bus.emit(&Event::IntentExecuted("open_app".to_string()));
+                    ActionResponse {
+                        success: true,
+                        message: "Application opened".to_string(),
+                        requires_confirmation: false,
+                        fallback_action: None,
+                        fallback_value: None,
+                        data: None,
+                    }
+                },
+                Err(err) => {
+                    event_bus.emit(&Event::ErrorOccurred(err.clone()));
+                    let fallback_url = build_fallback_url(&target);
+                    ActionResponse {
+                        success: false,
+                        message: format!(
+                            "App not found. Should I open this in Chrome? ({})",
+                            err
+                        ),
+                        requires_confirmation: true,
+                        fallback_action: Some("open_url".to_string()),
+                        fallback_value: Some(fallback_url),
+                        data: None,
+                    }
                 }
             }
         },
         
         Intent::OpenUrl { url } => {
+            // Check permission before executing
+            if let Err(perm_err) = permissions.check_permission(Capability::WebSearch) {
+                event_bus.emit(&Event::ErrorOccurred(perm_err.clone()));
+                return Ok(ActionResponse {
+                    success: false,
+                    message: perm_err,
+                    requires_confirmation: false,
+                    fallback_action: None,
+                    fallback_value: None,
+                    data: None,
+                });
+            }
+            
             if !is_valid_url(&url) {
+                event_bus.emit(&Event::ErrorOccurred("Invalid URL".to_string()));
                 ActionResponse {
                     success: false,
                     message: "Invalid URL".to_string(),
@@ -1049,30 +1372,50 @@ fn execute_action(
                 }
             } else {
                 match open_url_internal(&url, &app_handle) {
-                    Ok(()) => ActionResponse {
-                        success: true,
-                        message: "URL opened".to_string(),
-                        requires_confirmation: false,
-                        fallback_action: None,
-                        fallback_value: None,
-                        data: None,
+                    Ok(()) => {
+                        event_bus.emit(&Event::IntentExecuted("open_url".to_string()));
+                        ActionResponse {
+                            success: true,
+                            message: "URL opened".to_string(),
+                            requires_confirmation: false,
+                            fallback_action: None,
+                            fallback_value: None,
+                            data: None,
+                        }
                     },
-                    Err(err) => ActionResponse {
-                        success: false,
-                        message: format!("Failed to open URL: {}", err),
-                        requires_confirmation: false,
-                        fallback_action: None,
-                        fallback_value: None,
-                        data: None,
+                    Err(err) => {
+                        event_bus.emit(&Event::ErrorOccurred(err.clone()));
+                        ActionResponse {
+                            success: false,
+                            message: format!("Failed to open URL: {}", err),
+                            requires_confirmation: false,
+                            fallback_action: None,
+                            fallback_value: None,
+                            data: None,
+                        }
                     },
                 }
             }
         }
         
         Intent::SearchWeb { url } => {
+            // Check permission before executing
+            if let Err(perm_err) = permissions.check_permission(Capability::WebSearch) {
+                event_bus.emit(&Event::ErrorOccurred(perm_err.clone()));
+                return Ok(ActionResponse {
+                    success: false,
+                    message: perm_err,
+                    requires_confirmation: false,
+                    fallback_action: None,
+                    fallback_value: None,
+                    data: None,
+                });
+            }
+            
             // Search web (Google) - URL is already constructed by Brain Layer
             // In future, this will be delegated to LLM instead
             if !is_valid_url(&url) {
+                event_bus.emit(&Event::ErrorOccurred("Invalid search URL".to_string()));
                 ActionResponse {
                     success: false,
                     message: "Invalid search URL".to_string(),
@@ -1083,134 +1426,248 @@ fn execute_action(
                 }
             } else {
                 match open_url_internal(&url, &app_handle) {
-                    Ok(()) => ActionResponse {
-                        success: true,
-                        message: "Searching Google...".to_string(),
-                        requires_confirmation: false,
-                        fallback_action: None,
-                        fallback_value: None,
-                        data: None,
+                    Ok(()) => {
+                        event_bus.emit(&Event::IntentExecuted("search_web".to_string()));
+                        ActionResponse {
+                            success: true,
+                            message: "Searching Google...".to_string(),
+                            requires_confirmation: false,
+                            fallback_action: None,
+                            fallback_value: None,
+                            data: None,
+                        }
                     },
-                    Err(err) => ActionResponse {
-                        success: false,
-                        message: format!("Failed to open search: {}", err),
-                        requires_confirmation: false,
-                        fallback_action: None,
-                        fallback_value: None,
-                        data: None,
+                    Err(err) => {
+                        event_bus.emit(&Event::ErrorOccurred(err.clone()));
+                        ActionResponse {
+                            success: false,
+                            message: format!("Failed to open search: {}", err),
+                            requires_confirmation: false,
+                            fallback_action: None,
+                            fallback_value: None,
+                            data: None,
+                        }
                     },
                 }
             }
         }
         
-        Intent::KillProcess { process } => match kill_process_internal(process) {
-            Ok(()) => ActionResponse {
-                success: true,
-                message: "Process terminated".to_string(),
-                requires_confirmation: false,
-                fallback_action: None,
-                fallback_value: None,
-                data: None,
-            },
-            Err(err) => ActionResponse {
-                success: false,
-                message: format!("Failed to terminate process: {}", err),
-                requires_confirmation: false,
-                fallback_action: None,
-                fallback_value: None,
-                data: None,
-            },
+        Intent::KillProcess { process } => {
+            // Check permission before executing
+            if let Err(perm_err) = permissions.check_permission(Capability::KillProcess) {
+                event_bus.emit(&Event::ErrorOccurred(perm_err.clone()));
+                return Ok(ActionResponse {
+                    success: false,
+                    message: perm_err,
+                    requires_confirmation: false,
+                    fallback_action: None,
+                    fallback_value: None,
+                    data: None,
+                });
+            }
+            
+            match kill_process_internal(process) {
+                Ok(()) => {
+                    event_bus.emit(&Event::IntentExecuted("kill_process".to_string()));
+                    ActionResponse {
+                        success: true,
+                        message: "Process terminated".to_string(),
+                        requires_confirmation: false,
+                        fallback_action: None,
+                        fallback_value: None,
+                        data: None,
+                    }
+                },
+                Err(err) => {
+                    event_bus.emit(&Event::ErrorOccurred(err.clone()));
+                    ActionResponse {
+                        success: false,
+                        message: format!("Failed to terminate process: {}", err),
+                        requires_confirmation: false,
+                        fallback_action: None,
+                        fallback_value: None,
+                        data: None,
+                    }
+                },
+            }
         },
         
-        Intent::Remember { content } => match save_memory(&memory_store, &content) {
-            Ok(()) => ActionResponse {
-                success: true,
-                message: "Memory saved.".to_string(),
-                requires_confirmation: false,
-                fallback_action: None,
-                fallback_value: None,
-                data: None,
-            },
-            Err(err) => ActionResponse {
-                success: false,
-                message: format!("Failed to save memory: {}", err),
-                requires_confirmation: false,
-                fallback_action: None,
-                fallback_value: None,
-                data: None,
-            },
+        Intent::Remember { content } => {
+            // Check permission before executing
+            if let Err(perm_err) = permissions.check_permission(Capability::MemoryWrite) {
+                event_bus.emit(&Event::ErrorOccurred(perm_err.clone()));
+                return Ok(ActionResponse {
+                    success: false,
+                    message: perm_err,
+                    requires_confirmation: false,
+                    fallback_action: None,
+                    fallback_value: None,
+                    data: None,
+                });
+            }
+            
+            match save_memory(&memory_store, &content) {
+                Ok(()) => {
+                    event_bus.emit(&Event::MemorySaved(content));
+                    ActionResponse {
+                        success: true,
+                        message: "Memory saved.".to_string(),
+                        requires_confirmation: false,
+                        fallback_action: None,
+                        fallback_value: None,
+                        data: None,
+                    }
+                },
+                Err(err) => {
+                    event_bus.emit(&Event::ErrorOccurred(err.clone()));
+                    ActionResponse {
+                        success: false,
+                        message: format!("Failed to save memory: {}", err),
+                        requires_confirmation: false,
+                        fallback_action: None,
+                        fallback_value: None,
+                        data: None,
+                    }
+                },
+            }
         },
         
-        Intent::RecallMemory => match recall_memories(&memory_store) {
-            Ok(memories) => ActionResponse {
-                success: true,
-                message: "Here is what I remember.".to_string(),
-                requires_confirmation: false,
-                fallback_action: None,
-                fallback_value: None,
-                data: Some(memories),
-            },
-            Err(err) => ActionResponse {
-                success: false,
-                message: format!("Failed to recall memories: {}", err),
-                requires_confirmation: false,
-                fallback_action: None,
-                fallback_value: None,
-                data: None,
-            },
+        Intent::RecallMemory => {
+            // Check permission before executing
+            if let Err(perm_err) = permissions.check_permission(Capability::MemoryRead) {
+                event_bus.emit(&Event::ErrorOccurred(perm_err.clone()));
+                return Ok(ActionResponse {
+                    success: false,
+                    message: perm_err,
+                    requires_confirmation: false,
+                    fallback_action: None,
+                    fallback_value: None,
+                    data: None,
+                });
+            }
+            
+            match recall_memories(&memory_store) {
+                Ok(memories) => {
+                    event_bus.emit(&Event::IntentExecuted("recall_memory".to_string()));
+                    ActionResponse {
+                        success: true,
+                        message: "Here is what I remember.".to_string(),
+                        requires_confirmation: false,
+                        fallback_action: None,
+                        fallback_value: None,
+                        data: Some(memories),
+                    }
+                },
+                Err(err) => {
+                    event_bus.emit(&Event::ErrorOccurred(err.clone()));
+                    ActionResponse {
+                        success: false,
+                        message: format!("Failed to recall memories: {}", err),
+                        requires_confirmation: false,
+                        fallback_action: None,
+                        fallback_value: None,
+                        data: None,
+                    }
+                },
+            }
         },
         
-        Intent::SearchMemory { keyword } => match search_memories(&memory_store, &keyword) {
-            Ok(memories) => ActionResponse {
-                success: true,
-                message: format!("Found {} matching memories.", memories.len()),
-                requires_confirmation: false,
-                fallback_action: None,
-                fallback_value: None,
-                data: Some(memories),
-            },
-            Err(err) => ActionResponse {
-                success: false,
-                message: format!("Failed to search memories: {}", err),
-                requires_confirmation: false,
-                fallback_action: None,
-                fallback_value: None,
-                data: None,
-            },
+        Intent::SearchMemory { keyword } => {
+            // Check permission before executing
+            if let Err(perm_err) = permissions.check_permission(Capability::MemoryRead) {
+                event_bus.emit(&Event::ErrorOccurred(perm_err.clone()));
+                return Ok(ActionResponse {
+                    success: false,
+                    message: perm_err,
+                    requires_confirmation: false,
+                    fallback_action: None,
+                    fallback_value: None,
+                    data: None,
+                });
+            }
+            
+            match search_memories(&memory_store, &keyword) {
+                Ok(memories) => {
+                    event_bus.emit(&Event::IntentExecuted("search_memory".to_string()));
+                    ActionResponse {
+                        success: true,
+                        message: format!("Found {} matching memories.", memories.len()),
+                        requires_confirmation: false,
+                        fallback_action: None,
+                        fallback_value: None,
+                        data: Some(memories),
+                    }
+                },
+                Err(err) => {
+                    event_bus.emit(&Event::ErrorOccurred(err.clone()));
+                    ActionResponse {
+                        success: false,
+                        message: format!("Failed to search memories: {}", err),
+                        requires_confirmation: false,
+                        fallback_action: None,
+                        fallback_value: None,
+                        data: None,
+                    }
+                },
+            }
         },
         
         Intent::SetReminder { content, trigger_at } => {
+            // Check permission before executing
+            if let Err(perm_err) = permissions.check_permission(Capability::ReminderSchedule) {
+                event_bus.emit(&Event::ErrorOccurred(perm_err.clone()));
+                return Ok(ActionResponse {
+                    success: false,
+                    message: perm_err,
+                    requires_confirmation: false,
+                    fallback_action: None,
+                    fallback_value: None,
+                    data: None,
+                });
+            }
+            
             let reminder_json = serde_json::json!({
                 "content": content,
                 "trigger_at": trigger_at
             }).to_string();
+            
             match set_reminder(&memory_store, &reminder_json) {
-                Ok(()) => ActionResponse {
-                    success: true,
-                    message: "Reminder set successfully.".to_string(),
-                    requires_confirmation: false,
-                    fallback_action: None,
-                    fallback_value: None,
-                    data: None,
+                Ok(()) => {
+                    event_bus.emit(&Event::ReminderScheduled(content));
+                    ActionResponse {
+                        success: true,
+                        message: "Reminder set successfully.".to_string(),
+                        requires_confirmation: false,
+                        fallback_action: None,
+                        fallback_value: None,
+                        data: None,
+                    }
                 },
-                Err(err) => ActionResponse {
-                    success: false,
-                    message: format!("Failed to set reminder: {}", err),
-                    requires_confirmation: false,
-                    fallback_action: None,
-                    fallback_value: None,
-                    data: None,
+                Err(err) => {
+                    event_bus.emit(&Event::ErrorOccurred(err.clone()));
+                    ActionResponse {
+                        success: false,
+                        message: format!("Failed to set reminder: {}", err),
+                        requires_confirmation: false,
+                        fallback_action: None,
+                        fallback_value: None,
+                        data: None,
+                    }
                 },
             }
-        }
+        },
         
-        Intent::Unknown { text } => ActionResponse {
-            success: false,
-            message: format!("Unknown action: {}", text),
-            requires_confirmation: false,
-            fallback_action: None,
-            fallback_value: None,
-            data: None,
+        Intent::Unknown { text } => {
+            let error_msg = format!("Unknown action: {}", text);
+            event_bus.emit(&Event::ErrorOccurred(error_msg.clone()));
+            ActionResponse {
+                success: false,
+                message: error_msg,
+                requires_confirmation: false,
+                fallback_action: None,
+                fallback_value: None,
+                data: None,
+            }
         },
     };
 
@@ -1275,9 +1732,19 @@ pub fn run() {
 
     let registry = build_app_registry(all_apps);
 
+    // Initialize infrastructure layers
+    let event_bus = EventBus::new();
+    let permissions = PermissionManager::default_permissions();
+    
+    // Register telemetry subscriber
+    let telemetry_fn = create_telemetry_subscriber();
+    event_bus.register(telemetry_fn);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(registry)
+        .manage(event_bus)
+        .manage(permissions)
         .setup(move |app| {
             // Initialize memory database in app data directory
             let app_data_dir = app.path().app_data_dir().unwrap_or_else(|_| {

@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Noddy Intent Schema",
+  "description": "Canonical intent structure shared between Python Brain and Rust Runtime. Prevents schema drift between components.",
+  "type": "object",
+  "required": ["name", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Intent name (e.g., 'remember', 'search_web', 'open_app', 'open_url', 'kill_process', 'list_apps', 'recall_memory', 'search_memory', 'set_reminder', 'unknown')",
+      "minLength": 1
+    },
+    "payload": {
+      "type": "object",
+      "description": "Intent-specific structured data",
+      "additionalProperties": true
+    },
+    "confidence": {
+      "type": "number",
+      "description": "Confidence score (0.0 to 1.0)",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "default": 1.0
+    },
+    "source": {
+      "type": "string",
+      "description": "Source of intent detection: 'rule' (pattern-based) or 'llm' (LLM-generated)",
+      "enum": ["rule", "llm"],
+      "default": "rule"
+    },
+    "reasoning": {
+      "type": ["string", "null"],
+      "description": "Optional reasoning from LLM on why this intent was selected. Null by default.",
+      "default": null
+    }
+  }
+}
