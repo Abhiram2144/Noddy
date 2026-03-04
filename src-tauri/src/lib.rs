@@ -67,12 +67,12 @@ enum Intent {
 
 #[derive(Debug, Clone)]
 enum Event {
-    IntentReceived(String),      // intent_json
-    IntentExecuted(String),      // intent_json
-    MemorySaved(String),         // content
-    ReminderScheduled(String),   // reminder_json
-    ReminderTriggered(String),   // reminder_content
-    ErrorOccurred(String),       // error_message
+    IntentReceived(String),                          // intent_json
+    IntentExecuted { intent_name: String, duration_ms: u128 }, // intent name and execution time
+    MemorySaved(String),                             // content
+    ReminderScheduled(String),                       // reminder_json
+    ReminderTriggered(String),                       // reminder_content
+    ErrorOccurred(String),                           // error_message
 }
 
 #[derive(Clone)]
@@ -301,9 +301,11 @@ impl TelemetryEvent {
                 m.insert("intent_json".to_string(), json.clone());
                 ("IntentReceived".to_string(), m)
             }
-            Event::IntentExecuted(json) => {
+            Event::IntentExecuted { intent_name, duration_ms } => {
                 let mut m = HashMap::new();
-                m.insert("intent_json".to_string(), json.clone());
+                m.insert("intent_name".to_string(), intent_name.clone());
+                m.insert("duration_ms".to_string(), duration_ms.to_string());
+                m.insert("success".to_string(), "true".to_string());
                 ("IntentExecuted".to_string(), m)
             }
             Event::MemorySaved(content) => {
@@ -318,7 +320,13 @@ impl TelemetryEvent {
             }
             Event::ReminderTriggered(content) => {
                 let mut m = HashMap::new();
-                m.insert("content".to_string(), content.clone());
+                m.insert("content_summary".to_string(), 
+                    if content.len() > 100 { 
+                        format!("{}...", &content[..100]) 
+                    } else { 
+                        content.clone() 
+                    }
+                );
                 ("ReminderTriggered".to_string(), m)
             }
             Event::ErrorOccurred(msg) => {
@@ -1214,7 +1222,7 @@ fn set_reminder(memory_store: &MemoryStore, json_value: &str) -> Result<(), Stri
     Ok(())
 }
 
-fn check_expired_reminders(memory_store: &MemoryStore) -> Result<(), String> {
+fn check_expired_reminders(memory_store: &MemoryStore, event_bus: &EventBus) -> Result<(), String> {
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
     let current_time = SystemTime::now()
@@ -1238,6 +1246,9 @@ fn check_expired_reminders(memory_store: &MemoryStore) -> Result<(), String> {
     // Process each expired reminder
     for (id, content) in expired {
         println!("🔔 REMINDER: {}", content);
+        
+        // Emit ReminderTriggered event for telemetry and observability
+        event_bus.emit(&Event::ReminderTriggered(content.clone()));
         
         // Delete the reminder
         conn.execute("DELETE FROM memories WHERE id = ?1", params![id])
@@ -1274,7 +1285,7 @@ fn execute_action(
     event_bus: tauri::State<EventBus>,
     permissions: tauri::State<PermissionManager>,
 ) -> Result<ActionResponse, String> {
-    let start_time = SystemTime::now();
+    let start_time = std::time::Instant::now();
     
     // Deserialize JSON string into typed Intent enum
     let intent: Intent = serde_json::from_str(&intent_json)
@@ -1291,7 +1302,11 @@ fn execute_action(
     let response = match intent {
         Intent::ListApps => {
             let names = registry.display_names.clone();
-            event_bus.emit(&Event::IntentExecuted("list_apps".to_string()));
+            let duration_ms = start_time.elapsed().as_millis();
+            event_bus.emit(&Event::IntentExecuted {
+                intent_name: "list_apps".to_string(),
+                duration_ms,
+            });
             ActionResponse {
                 success: true,
                 message: "Installed apps listed".to_string(),
@@ -1318,7 +1333,11 @@ fn execute_action(
             
             match open_app_internal(&target, &registry) {
                 Ok(()) => {
-                    event_bus.emit(&Event::IntentExecuted("open_app".to_string()));
+                    let duration_ms = start_time.elapsed().as_millis();
+                    event_bus.emit(&Event::IntentExecuted {
+                        intent_name: "open_app".to_string(),
+                        duration_ms,
+                    });
                     ActionResponse {
                         success: true,
                         message: "Application opened".to_string(),
@@ -1373,7 +1392,11 @@ fn execute_action(
             } else {
                 match open_url_internal(&url, &app_handle) {
                     Ok(()) => {
-                        event_bus.emit(&Event::IntentExecuted("open_url".to_string()));
+                        let duration_ms = start_time.elapsed().as_millis();
+                        event_bus.emit(&Event::IntentExecuted {
+                            intent_name: "open_url".to_string(),
+                            duration_ms,
+                        });
                         ActionResponse {
                             success: true,
                             message: "URL opened".to_string(),
@@ -1427,7 +1450,11 @@ fn execute_action(
             } else {
                 match open_url_internal(&url, &app_handle) {
                     Ok(()) => {
-                        event_bus.emit(&Event::IntentExecuted("search_web".to_string()));
+                        let duration_ms = start_time.elapsed().as_millis();
+                        event_bus.emit(&Event::IntentExecuted {
+                            intent_name: "search_web".to_string(),
+                            duration_ms,
+                        });
                         ActionResponse {
                             success: true,
                             message: "Searching Google...".to_string(),
@@ -1468,7 +1495,11 @@ fn execute_action(
             
             match kill_process_internal(process) {
                 Ok(()) => {
-                    event_bus.emit(&Event::IntentExecuted("kill_process".to_string()));
+                    let duration_ms = start_time.elapsed().as_millis();
+                    event_bus.emit(&Event::IntentExecuted {
+                        intent_name: "kill_process".to_string(),
+                        duration_ms,
+                    });
                     ActionResponse {
                         success: true,
                         message: "Process terminated".to_string(),
@@ -1508,7 +1539,12 @@ fn execute_action(
             
             match save_memory(&memory_store, &content) {
                 Ok(()) => {
+                    let duration_ms = start_time.elapsed().as_millis();
                     event_bus.emit(&Event::MemorySaved(content));
+                    event_bus.emit(&Event::IntentExecuted {
+                        intent_name: "remember".to_string(),
+                        duration_ms,
+                    });
                     ActionResponse {
                         success: true,
                         message: "Memory saved.".to_string(),
@@ -1548,7 +1584,11 @@ fn execute_action(
             
             match recall_memories(&memory_store) {
                 Ok(memories) => {
-                    event_bus.emit(&Event::IntentExecuted("recall_memory".to_string()));
+                    let duration_ms = start_time.elapsed().as_millis();
+                    event_bus.emit(&Event::IntentExecuted {
+                        intent_name: "recall_memory".to_string(),
+                        duration_ms,
+                    });
                     ActionResponse {
                         success: true,
                         message: "Here is what I remember.".to_string(),
@@ -1588,7 +1628,11 @@ fn execute_action(
             
             match search_memories(&memory_store, &keyword) {
                 Ok(memories) => {
-                    event_bus.emit(&Event::IntentExecuted("search_memory".to_string()));
+                    let duration_ms = start_time.elapsed().as_millis();
+                    event_bus.emit(&Event::IntentExecuted {
+                        intent_name: "search_memory".to_string(),
+                        duration_ms,
+                    });
                     ActionResponse {
                         success: true,
                         message: format!("Found {} matching memories.", memories.len()),
@@ -1633,7 +1677,12 @@ fn execute_action(
             
             match set_reminder(&memory_store, &reminder_json) {
                 Ok(()) => {
+                    let duration_ms = start_time.elapsed().as_millis();
                     event_bus.emit(&Event::ReminderScheduled(content));
+                    event_bus.emit(&Event::IntentExecuted {
+                        intent_name: "set_reminder".to_string(),
+                        duration_ms,
+                    });
                     ActionResponse {
                         success: true,
                         message: "Reminder set successfully.".to_string(),
@@ -1739,6 +1788,15 @@ pub fn run() {
     // Register telemetry subscriber
     let telemetry_fn = create_telemetry_subscriber();
     event_bus.register(telemetry_fn);
+    
+    println!("✓ Phase 2 Infrastructure Activated:");
+    println!("  • EventBus initialized");
+    println!("  • PermissionManager initialized (default: all capabilities allowed)");
+    println!("  • TelemetryEvent subscriber registered");
+    println!("  • Execution lifecycle instrumentation enabled");
+
+    // Clone event_bus for use in setup closure
+    let event_bus_for_setup = event_bus.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -1798,11 +1856,13 @@ pub fn run() {
             };
             
             // Spawn background reminder checker thread
+            // Clone event_bus for background thread to emit ReminderTriggered events
+            let event_bus_clone = event_bus_for_setup.clone();
             std::thread::spawn(move || {
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(30));
                     
-                    if let Err(e) = check_expired_reminders(&memory_store_clone) {
+                    if let Err(e) = check_expired_reminders(&memory_store_clone, &event_bus_clone) {
                         eprintln!("⚠️  Reminder check failed: {}", e);
                     }
                 }
