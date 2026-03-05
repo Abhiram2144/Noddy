@@ -47,7 +47,6 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
-  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [detailPanelOpen, setDetailPanelOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const graphRef = useRef<any>(null);
@@ -172,15 +171,12 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
 
   const nodeColor = (node: GraphNode) => {
     if (node.id === selectedNode?.id) return "#ddd6fe";
-    if (node.id === hoveredNodeId) return "#b19cd9";
     return TAG_COLORS[node.tag || "default"];
   };
 
   const nodeSize = (node: GraphNode) => {
     const baseSize = 6 + (node.importance || 0.5) * 8;
-    return node.id === selectedNode?.id || node.id === hoveredNodeId
-      ? baseSize * 1.3
-      : baseSize;
+    return node.id === selectedNode?.id ? baseSize * 1.2 : baseSize;
   };
 
   return (
@@ -304,7 +300,6 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
             linkOpacity={0.55}
             linkWidth={(link: any) => 1 + (link.value || 0) * 1.8}
             onNodeClick={handleNodeClick}
-            onNodeHover={(node: any) => setHoveredNodeId(node ? node.id : null)}
             backgroundColor="#111111"
             width={graphSize.width}
             height={graphSize.height}
