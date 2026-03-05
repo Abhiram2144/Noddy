@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, Trash2, Calendar, X } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
@@ -49,6 +50,21 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
   // Fetch memories on mount
   useEffect(() => {
     fetchMemories();
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    const setup = async () => {
+      unlisten = await listen("memory_saved", async () => {
+        await fetchMemories();
+      });
+    };
+
+    setup();
+    return () => {
+      if (unlisten) unlisten();
+    };
   }, []);
 
   const fetchMemories = async () => {
@@ -109,25 +125,14 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
     }
   };
 
-  const containerVariants = {
-    hidden: { opacity: 0 },
-    show: {
-      opacity: 1,
-      transition: {
-        staggerChildren: ANIMATION_NORMAL / 1000,
-        delayChildren: 0.1,
-      },
-    },
-  };
-
   const itemVariants = {
-    hidden: { opacity: 0, translateY: 20 },
+    hidden: { opacity: 0, translateY: 12 },
     show: {
       opacity: 1,
       translateY: 0,
-      transition: { duration: ANIMATION_NORMAL / 1000 },
+      transition: { duration: 180 / 1000 },
     },
-    exit: { opacity: 0, translateY: -10, transition: { duration: 150 / 1000 } },
+    exit: { opacity: 0, translateY: -8, transition: { duration: 120 / 1000 } },
   };
 
   return (
@@ -194,6 +199,12 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
 
       {/* Memory Grid */}
       <div style={{ flex: 1, overflowY: "auto", padding: "0 32px 32px 32px" }}>
+        {!isLoading && (
+          <div style={{ marginBottom: "14px", fontSize: "13px", color: "var(--text-secondary)" }}>
+            Showing {filteredMemories.length} memories
+          </div>
+        )}
+
         {isLoading ? (
           <motion.div
             initial={{ opacity: 0 }}
@@ -212,26 +223,31 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
             <p>No memories found</p>
           </motion.div>
         ) : (
-          <motion.div
-            variants={containerVariants}
-            initial="hidden"
-            animate="show"
-            style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "20px" }}
-          >
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "20px" }}>
             <AnimatePresence mode="popLayout">
               {filteredMemories.map((memory) => (
                 <motion.div
                   key={memory.id}
                   variants={itemVariants}
+                  initial="hidden"
+                  animate="show"
+                  exit="exit"
                   layout
                   onClick={() => handleSelectMemory(memory)}
                   className="card"
                   whileHover={{ y: -4 }}
-                  style={{ cursor: "pointer", position: "relative" }}
+                  style={{
+                    cursor: "pointer",
+                    position: "relative",
+                    background: "var(--bg-tertiary)",
+                    border: "1px solid var(--border-medium)",
+                    boxShadow: "0 6px 20px rgba(0, 0, 0, 0.35)",
+                    minHeight: "148px",
+                  }}
                 >
                   {/* Memory Text */}
                   <p style={{ fontSize: "14px", color: "var(--text-primary)", marginBottom: "16px", lineHeight: "1.6", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-                    {memory.content}
+                    {memory.content || "[empty memory]"}
                   </p>
 
                   {/* Tags */}
@@ -286,7 +302,7 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
                 </motion.div>
               ))}
             </AnimatePresence>
-          </motion.div>
+          </div>
         )}
       </div>
 

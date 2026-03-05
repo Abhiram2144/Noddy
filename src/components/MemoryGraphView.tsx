@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, RotateCcw, ZoomIn, ZoomOut, X } from "lucide-react";
 import ForceGraph3D from "react-force-graph-3d";
@@ -10,6 +11,9 @@ interface GraphNode {
   label: string;
   importance: number;
   tag?: string;
+  x?: number;
+  y?: number;
+  z?: number;
 }
 
 interface GraphEdge {
@@ -52,6 +56,21 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
 
   useEffect(() => {
     fetchGraphData();
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    const setup = async () => {
+      unlisten = await listen("memory_saved", async () => {
+        await fetchGraphData();
+      });
+    };
+
+    setup();
+    return () => {
+      if (unlisten) unlisten();
+    };
   }, []);
 
   // Keep graph canvas bounded to panel size instead of full window.
@@ -124,6 +143,32 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
           filteredNodes.some((n) => n.id === (typeof e.target === "string" ? e.target : e.target.id))
       )
     : graphData.edges;
+
+  const displayNodes: GraphNode[] = (() => {
+    if (filteredNodes.length === 0) return [];
+    if (filteredEdges.length > 0) return filteredNodes;
+
+    // When there are no edges, seed a ring layout so nodes don't stack visually.
+    const radius = Math.max(120, filteredNodes.length * 16);
+    return filteredNodes.map((node, index) => {
+      const angle = (index / filteredNodes.length) * Math.PI * 2;
+      return {
+        ...node,
+        x: Math.cos(angle) * radius,
+        y: Math.sin(angle) * radius,
+        z: ((index % 4) - 1.5) * 30,
+      };
+    });
+  })();
+
+  useEffect(() => {
+    if (!graphRef.current || isLoading || filteredNodes.length === 0) return;
+    const timer = window.setTimeout(() => {
+      graphRef.current.zoomToFit(400, 20);
+      setZoom(1);
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [isLoading, filteredNodes.length]);
 
   const nodeColor = (node: GraphNode) => {
     if (node.id === selectedNode?.id) return "#ddd6fe";
@@ -242,7 +287,7 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
           <ForceGraph3D
             ref={graphRef}
             graphData={{
-              nodes: filteredNodes,
+              nodes: displayNodes,
               links: filteredEdges.map((e) => ({
                 source: typeof e.source === "string" ? e.source : e.source.id,
                 target: typeof e.target === "string" ? e.target : e.target.id,
@@ -252,18 +297,23 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
             nodeLabel={(n: any) => n.label}
             nodeColor={nodeColor}
             nodeVal={nodeSize}
-            linkColor={() => "#444444"}
-            linkWidth={(link: any) => 0.5 + (link.value || 0) * 1.5}
+            nodeOpacity={1}
+            nodeRelSize={9}
+            nodeResolution={16}
+            linkColor={() => "#6b7280"}
+            linkOpacity={0.55}
+            linkWidth={(link: any) => 1 + (link.value || 0) * 1.8}
             onNodeClick={handleNodeClick}
             onNodeHover={(node: any) => setHoveredNodeId(node ? node.id : null)}
-            backgroundColor="var(--bg-secondary)"
+            backgroundColor="#111111"
             width={graphSize.width}
             height={graphSize.height}
-            d3VelocityDecay={0.3}
+            d3VelocityDecay={0.22}
             numDimensions={3}
             nodeVisibility={(n: any) => filteredNodes.some((fn) => fn.id === n.id)}
             warmupTicks={100}
             cooldownTicks={300}
+            enableNodeDrag
           />
         )}
 

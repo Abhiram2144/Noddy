@@ -51,9 +51,13 @@ pub fn get_memories(
 ) -> Result<Vec<Memory>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT CAST(id AS TEXT), content, created_at, importance, source
+            "SELECT CAST(id AS TEXT),
+                    content,
+                    COALESCE(created_at, CAST(strftime('%s', 'now') AS INTEGER)),
+                    COALESCE(importance, 0.5),
+                    COALESCE(source, 'user_input')
              FROM memories
-             WHERE user_id = ?1
+             WHERE user_id = ?1 AND content IS NOT NULL
              ORDER BY created_at DESC
              LIMIT ?2 OFFSET ?3",
         )
@@ -85,9 +89,13 @@ pub fn search_memories(
     let search_pattern = format!("%{}%", query);
     let mut stmt = conn
         .prepare(
-            "SELECT CAST(id AS TEXT), content, created_at, importance, source
+            "SELECT CAST(id AS TEXT),
+                    content,
+                    COALESCE(created_at, CAST(strftime('%s', 'now') AS INTEGER)),
+                    COALESCE(importance, 0.5),
+                    COALESCE(source, 'user_input')
              FROM memories
-             WHERE user_id = ?1 AND content LIKE ?2
+             WHERE user_id = ?1 AND content LIKE ?2 AND content IS NOT NULL
              ORDER BY importance DESC, created_at DESC
              LIMIT ?3",
         )

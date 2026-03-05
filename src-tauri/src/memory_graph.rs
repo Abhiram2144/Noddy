@@ -277,7 +277,10 @@ pub fn get_memory_graph(conn: &Connection, user_id: &str, limit: i32) -> Result<
 
     let mut stmt = conn
         .prepare(
-            "SELECT CAST(id AS TEXT), content, importance FROM memories
+            "SELECT CAST(id AS TEXT),
+                    content,
+                    COALESCE(importance, 0.5)
+             FROM memories
              WHERE user_id = ?1
              ORDER BY importance DESC, created_at DESC
              LIMIT ?2",

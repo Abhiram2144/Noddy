@@ -1534,6 +1534,10 @@ fn execute_action(
                 Ok(()) => {
                     let duration_ms = start_time.elapsed().as_millis();
                     event_bus.emit(&Event::MemorySaved(content));
+                    let _ = app_handle.emit("memory_saved", serde_json::json!({
+                        "user_id": user_id,
+                        "intent": "remember"
+                    }));
                     event_bus.emit(&Event::IntentExecuted {
                         intent_name: "remember".to_string(),
                         duration_ms,
