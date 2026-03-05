@@ -128,33 +128,35 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
   };
 
   return (
-    <div className="h-full flex flex-col bg-[#0d0d0d] text-[#eaeaea]">
+    <motion.div
+      className="panel-container"
+      initial={{ opacity: 0, x: 40 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -40 }}
+      transition={{ duration: 0.4 }}
+    >
       {/* Header */}
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: ANIMATION_NORMAL / 1000 }}
-        className="px-8 py-6 bg-[#0d0d0d] border-b border-[#2a2a2a]"
-      >
-        <h1 className="text-3xl font-bold mb-1">Memory Bank</h1>
-        <p className="text-[#aaaaaa] text-sm">Your stored knowledge and memories</p>
-      </motion.div>
+      <div className="panel-header">
+        <h1 className="panel-title">Memory Bank</h1>
+        <p className="panel-subtitle">Your stored knowledge and memories</p>
+      </div>
 
       {/* Search Bar */}
       <motion.div
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: ANIMATION_NORMAL / 1000, delay: 100 / 1000 }}
-        className="px-8 py-4 border-b border-[#2a2a2a]"
+        style={{ padding: "0 32px 20px 32px" }}
       >
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#6c5ce7]" />
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[#6c5ce7]/70" />
           <input
             type="text"
             placeholder="Search memories..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 bg-[#161616] border border-[#2a2a2a] rounded-lg text-[#eaeaea] placeholder-[#aaaaaa] focus:outline-none focus:border-[#6c5ce7] transition-all duration-150"
+            className="search-input"
+            style={{ paddingLeft: "48px", width: "100%" }}
           />
         </div>
       </motion.div>
@@ -164,19 +166,23 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
         transition={{ duration: 250 / 1000, delay: 150 / 1000 }}
-        className="px-8 py-4 flex gap-2 overflow-x-auto border-b border-[#2a2a2a]"
+        style={{ padding: "0 32px 20px 32px", display: "flex", gap: "12px", overflowX: "auto" }}
       >
         {FILTER_PILLS.map((pill) => (
           <motion.button
             key={pill.value}
             onClick={() => setActiveFilter(pill.value)}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-all duration-150 ${
-              activeFilter === pill.value
-                ? "bg-[#6c5ce7] text-white"
-                : "bg-[#161616] text-[#aaaaaa] border border-[#2a2a2a] hover:border-[#6c5ce7] hover:text-[#eaeaea]"
-            }`}
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
+            className={activeFilter === pill.value ? "btn btn-primary" : "btn btn-secondary"}
+            style={{ 
+              whiteSpace: "nowrap",
+              minWidth: "auto",
+              ...(activeFilter === pill.value && {
+                background: "linear-gradient(135deg, #6c5ce7 0%, #8b7bea 100%)",
+                boxShadow: "0 4px 12px rgba(108, 92, 231, 0.3)",
+              })
+            }}
           >
             {pill.label}
           </motion.button>
@@ -184,36 +190,30 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
       </motion.div>
 
       {/* Memory Grid */}
-      <div className="flex-1 overflow-y-auto px-8 py-6">
+      <div style={{ flex: 1, overflowY: "auto", padding: "0 32px 32px 32px" }}>
         {isLoading ? (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className="flex items-center justify-center h-40"
+            className="empty-state"
           >
-            <div className="flex flex-col items-center gap-3">
-              <motion.div
-                animate={{ rotate: 360 }}
-                transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-                className="w-8 h-8 border-2 border-[#6c5ce7] border-t-transparent rounded-full"
-              />
-              <p className="text-[#aaaaaa] text-sm">Loading memories...</p>
-            </div>
+            <div style={{ fontSize: "48px", marginBottom: "16px", animation: "pulse 1.5s infinite" }}>⏳</div>
+            <p>Loading memories...</p>
           </motion.div>
         ) : filteredMemories.length === 0 ? (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className="flex items-center justify-center h-40 text-[#aaaaaa]"
+            className="empty-state"
           >
-            <p className="text-sm">No memories found</p>
+            <p>No memories found</p>
           </motion.div>
         ) : (
           <motion.div
             variants={containerVariants}
             initial="hidden"
             animate="show"
-            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+            style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "20px" }}
           >
             <AnimatePresence mode="popLayout">
               {filteredMemories.map((memory) => (
@@ -222,21 +222,23 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
                   variants={itemVariants}
                   layout
                   onClick={() => handleSelectMemory(memory)}
-                  className="bg-[#161616] border border-[#2a2a2a] rounded-lg p-4 cursor-pointer hover:border-[#6c5ce7] transition-all duration-150 group"
-                  whileHover={{ scale: 1.04 }}
+                  className="card"
+                  whileHover={{ y: -4 }}
+                  style={{ cursor: "pointer", position: "relative" }}
                 >
                   {/* Memory Text */}
-                  <p className="text-[#eaeaea] text-sm line-clamp-3 mb-3 leading-relaxed">
+                  <p style={{ fontSize: "14px", color: "var(--text-primary)", marginBottom: "16px", lineHeight: "1.6", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
                     {memory.content}
                   </p>
 
                   {/* Tags */}
                   {memory.tags && memory.tags.length > 0 && (
-                    <div className="flex gap-1 flex-wrap mb-3">
+                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "16px" }}>
                       {memory.tags.slice(0, 2).map((tag) => (
                         <span
                           key={tag}
-                          className="px-2 py-1 bg-[#6c5ce7]/20 text-[#6c5ce7] text-xs rounded"
+                          className="badge badge-primary"
+                          style={{ fontSize: "11px" }}
                         >
                           {tag}
                         </span>
@@ -245,9 +247,9 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
                   )}
 
                   {/* Footer */}
-                  <div className="flex items-center justify-between pt-3 border-t border-[#2a2a2a]">
-                    <div className="flex items-center gap-2 text-[#aaaaaa] text-xs">
-                      <Calendar className="w-3 h-3" />
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: "12px", borderTop: "1px solid var(--bg-elevated)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text-secondary)" }}>
+                      <Calendar style={{ width: "14px", height: "14px" }} />
                       <span>{memory.timestamp}</span>
                     </div>
                     <motion.button
@@ -255,11 +257,13 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
                         e.stopPropagation();
                         handleDeleteMemory(memory.id);
                       }}
-                      whileHover={{ scale: 1.1 }}
-                      whileTap={{ scale: 0.95 }}
-                      className="p-1.5 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                      whileHover={{ scale: 1.15 }}
+                      whileTap={{ scale: 0.9 }}
+                      style={{ padding: "8px", borderRadius: "8px", opacity: 0, transition: "opacity 0.2s", background: "transparent", border: "none", cursor: "pointer" }}
+                      onMouseEnter={(e) => e.currentTarget.style.opacity = "1"}
+                      onMouseLeave={(e) => e.currentTarget.style.opacity = "0"}
                     >
-                      <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                      <Trash2 style={{ width: "16px", height: "16px", color: "var(--error)" }} />
                     </motion.button>
                   </div>
                 </motion.div>
@@ -277,47 +281,67 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: ANIMATION_NORMAL / 1000 }}
-            className="absolute inset-0 bg-black/50 z-40"
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              background: "rgba(0, 0, 0, 0.7)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 1000,
+            }}
             onClick={() => setDetailPanelOpen(false)}
           >
             <motion.div
-              initial={{ x: 420 }}
-              animate={{ x: 0 }}
-              exit={{ x: 420 }}
-              transition={{ duration: 350 / 1000 }}
-              className="fixed right-0 top-0 bottom-0 w-[420px] bg-[#161616] border-l border-[#2a2a2a] overflow-y-auto z-50"
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              transition={{ duration: 350 / 1000, ease: "easeOut" }}
+              style={{
+                background: "var(--bg-tertiary)",
+                borderRadius: "16px",
+                padding: "32px",
+                width: "90%",
+                maxWidth: "600px",
+                border: "1px solid var(--bg-elevated)",
+                maxHeight: "80vh",
+                overflowY: "auto",
+              }}
               onClick={(e) => e.stopPropagation()}
             >
               {/* Panel Header */}
-              <div className="px-6 py-4 border-b border-[#2a2a2a] flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Memory Details</h2>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "24px" }}>
+                <h2 style={{ fontSize: "24px", fontWeight: 600, color: "var(--text-primary)" }}>Memory Details</h2>
                 <motion.button
                   onClick={() => setDetailPanelOpen(false)}
-                  whileHover={{ scale: 1.1 }}
-                  whileTap={{ scale: 0.95 }}
-                  className="p-1.5 text-[#aaaaaa] hover:text-[#eaeaea]"
+                  whileHover={{ scale: 1.1, rotate: 90 }}
+                  whileTap={{ scale: 0.9 }}
+                  style={{ padding: "8px", background: "transparent", border: "none", cursor: "pointer", color: "var(--text-secondary)", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "8px" }}
                 >
-                  <X className="w-5 h-5" />
+                  <X style={{ width: "20px", height: "20px" }} />
                 </motion.button>
               </div>
 
               {/* Panel Content */}
-              <div className="p-6 space-y-6">
+              <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
                 {/* Full Text */}
                 <div>
-                  <p className="text-[#aaaaaa] text-xs uppercase mb-2">Content</p>
-                  <p className="text-[#eaeaea] leading-relaxed">{selectedMemory.content}</p>
+                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px", fontWeight: 500 }}>Content</p>
+                  <p style={{ fontSize: "15px", color: "var(--text-primary)", lineHeight: "1.6" }}>{selectedMemory.content}</p>
                 </div>
 
                 {/* Tags */}
                 {selectedMemory.tags && selectedMemory.tags.length > 0 && (
                   <div>
-                    <p className="text-[#aaaaaa] text-xs uppercase mb-2">Tags</p>
-                    <div className="flex gap-2 flex-wrap">
+                    <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px", fontWeight: 500 }}>Tags</p>
+                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                       {selectedMemory.tags.map((tag) => (
                         <span
                           key={tag}
-                          className="px-3 py-1 bg-[#6c5ce7]/20 text-[#6c5ce7] text-xs rounded"
+                          className="badge badge-primary"
                         >
                           {tag}
                         </span>
@@ -328,21 +352,23 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
 
                 {/* Timestamp */}
                 <div>
-                  <p className="text-[#aaaaaa] text-xs uppercase mb-1">Created</p>
-                  <p className="text-[#eaeaea] text-sm">{selectedMemory.timestamp}</p>
+                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px", fontWeight: 500 }}>Created</p>
+                  <p style={{ fontSize: "14px", color: "var(--text-primary)" }}>{selectedMemory.timestamp}</p>
                 </div>
 
                 {/* Importance */}
                 <div>
-                  <p className="text-[#aaaaaa] text-xs uppercase mb-2">Importance</p>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 bg-[#2a2a2a] rounded-full h-2 overflow-hidden">
-                      <div
-                        className="bg-[#6c5ce7] h-full rounded-full"
-                        style={{ width: `${(selectedMemory.importance || 0.5) * 100}%` }}
+                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px", fontWeight: 500 }}>Importance</p>
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                    <div style={{ flex: 1, background: "var(--bg-elevated)", borderRadius: "999px", height: "8px", overflow: "hidden" }}>
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ width: `${(selectedMemory.importance || 0.5) * 100}%` }}
+                        transition={{ duration: 0.6, ease: "easeOut" }}
+                        style={{ background: "linear-gradient(90deg, #6c5ce7, #a78bfa)", height: "100%", borderRadius: "999px" }}
                       />
                     </div>
-                    <span className="text-[#aaaaaa] text-sm">
+                    <span style={{ fontSize: "14px", color: "var(--text-secondary)", minWidth: "3rem", textAlign: "right", fontWeight: 500 }}>
                       {((selectedMemory.importance || 0.5) * 100).toFixed(0)}%
                     </span>
                   </div>
@@ -356,7 +382,8 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
                   }}
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
-                  className="w-full py-2.5 bg-red-500/20 border border-red-500/30 rounded-lg text-red-400 text-sm font-medium hover:bg-red-500/30 transition-colors"
+                  className="btn btn-secondary"
+                  style={{ width: "100%", marginTop: "8px", color: "var(--error)", borderColor: "var(--error)" }}
                 >
                   Delete Memory
                 </motion.button>
@@ -365,6 +392,6 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
           </motion.div>
         )}
       </AnimatePresence>
-    </div>
+    </motion.div>
   );
 }

@@ -120,53 +120,69 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
   };
 
   return (
-    <div className="h-full flex flex-col bg-[#0b0b0b] text-[#eaeaea]">
+    <motion.div
+      className="panel-container"
+      initial={{ opacity: 0, x: 40 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -40 }}
+      transition={{ duration: 0.4 }}
+    >
+      {/* Header */}
+      <div className="panel-header">
+        <h1 className="panel-title">Knowledge Graph</h1>
+        <p className="panel-subtitle">Visualize connections between your memories</p>
+      </div>
+
       {/* Controls Bar */}
       <motion.div
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: ANIMATION_NORMAL / 1000 }}
-        className="px-8 py-4 border-b border-[#2a2a2a] flex items-center gap-4"
+        style={{ padding: "0 32px 20px 32px", display: "flex", alignItems: "center", gap: "16px" }}
       >
-        <div className="flex-1 relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#6c5ce7]" />
+        <div style={{ flex: 1, position: "relative" }}>
+          <Search style={{ position: "absolute", left: "16px", top: "50%", transform: "translateY(-50%)", width: "20px", height: "20px", color: "#6c5ce7", opacity: 0.7 }} />
           <input
             type="text"
             placeholder="Search nodes..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 bg-[#161616] border border-[#2a2a2a] rounded-lg text-[#eaeaea] placeholder-[#aaaaaa] focus:outline-none focus:border-[#6c5ce7] transition-all duration-150"
+            className="search-input"
+            style={{ paddingLeft: "48px", width: "100%" }}
           />
         </div>
 
         <motion.button
           onClick={handleResetCamera}
-          whileHover={{ scale: 1.05 }}
+          whileHover={{ scale: 1.05, rotate: -180 }}
           whileTap={{ scale: 0.95 }}
-          className="p-2.5 bg-[#161616] border border-[#2a2a2a] rounded-lg text-[#6c5ce7] hover:border-[#6c5ce7] transition-colors"
+          className="btn btn-secondary"
           title="Reset camera"
+          style={{ padding: "12px" }}
         >
-          <RotateCcw className="w-4 h-4" />
+          <RotateCcw style={{ width: "20px", height: "20px" }} />
         </motion.button>
 
         <motion.button
           onClick={() => setZoom((z) => Math.min(z + 0.2, 3))}
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
-          className="p-2.5 bg-[#161616] border border-[#2a2a2a] rounded-lg text-[#6c5ce7] hover:border-[#6c5ce7] transition-colors"
+          className="btn btn-secondary"
           title="Zoom in"
+          style={{ padding: "12px" }}
         >
-          <ZoomIn className="w-4 h-4" />
+          <ZoomIn style={{ width: "20px", height: "20px" }} />
         </motion.button>
 
         <motion.button
           onClick={() => setZoom((z) => Math.max(z - 0.2, 0.2))}
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
-          className="p-2.5 bg-[#161616] border border-[#2a2a2a] rounded-lg text-[#6c5ce7] hover:border-[#6c5ce7] transition-colors"
+          className="btn btn-secondary"
           title="Zoom out"
+          style={{ padding: "12px" }}
         >
-          <ZoomOut className="w-4 h-4" />
+          <ZoomOut style={{ width: "20px", height: "20px" }} />
         </motion.button>
       </motion.div>
 
@@ -175,26 +191,20 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: ANIMATION_NORMAL / 1000, delay: 100 / 1000 }}
-        className="flex-1 relative bg-[#0b0b0b] overflow-hidden"
+        style={{ flex: 1, position: "relative", background: "var(--bg-secondary)", overflow: "hidden" }}
       >
         {isLoading ? (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className="absolute inset-0 flex items-center justify-center"
+            className="empty-state"
           >
-            <div className="flex flex-col items-center gap-3">
-              <motion.div
-                animate={{ rotate: 360 }}
-                transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-                className="w-8 h-8 border-2 border-[#6c5ce7] border-t-transparent rounded-full"
-              />
-              <p className="text-[#aaaaaa] text-sm">Building knowledge graph...</p>
-            </div>
+            <div style={{ fontSize: "48px", marginBottom: "16px", animation: "pulse 1.5s infinite" }}>⏳</div>
+            <p>Building knowledge graph...</p>
           </motion.div>
         ) : filteredNodes.length === 0 ? (
-          <div className="absolute inset-0 flex items-center justify-center text-[#aaaaaa]">
-            <p className="text-sm">No memories in graph</p>
+          <div className="empty-state">
+            <p>No memories in graph</p>
           </div>
         ) : (
           <ForceGraph3D
@@ -214,7 +224,7 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
             linkWidth={(link: any) => 0.5 + (link.value || 0) * 1.5}
             onNodeClick={handleNodeClick}
             onNodeHover={(node: any) => setHoveredNodeId(node ? node.id : null)}
-            backgroundColor="#0b0b0b"
+            backgroundColor="var(--bg-secondary)"
             width={typeof window !== "undefined" ? window.innerWidth : 800}
             height={typeof window !== "undefined" ? window.innerHeight : 600}
             d3VelocityDecay={0.3}
@@ -227,9 +237,24 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
 
         {/* Zoom Indicator */}
         {!isLoading && filteredNodes.length > 0 && (
-          <div className="absolute top-4 left-8 bg-[#161616]/80 border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs text-[#aaaaaa]">
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 300 / 1000 }}
+            style={{
+              position: "absolute",
+              top: "24px",
+              left: "32px",
+              background: "var(--bg-tertiary)",
+              border: "1px solid var(--bg-elevated)",
+              borderRadius: "12px",
+              padding: "12px 16px",
+              fontSize: "13px",
+              color: "var(--text-secondary)",
+            }}
+          >
             Zoom: {(zoom * 100).toFixed(0)}%
-          </div>
+          </motion.div>
         )}
 
         {/* Legend */}
@@ -238,14 +263,21 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 200 / 1000 }}
-            className="absolute bottom-8 left-8 bg-[#161616]/80 border border-[#2a2a2a] rounded-lg p-4 text-xs space-y-2"
+            className="card"
+            style={{
+              position: "absolute",
+              bottom: "32px",
+              left: "32px",
+              padding: "20px",
+              minWidth: "180px",
+            }}
           >
-            <p className="text-[#aaaaaa] font-semibold mb-3">Tag Colors</p>
-            <div className="space-y-1.5">
+            <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "16px", fontWeight: 500 }}>Tag Colors</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
               {Object.entries(TAG_COLORS).map(([tag, color]) => (
-                <div key={tag} className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
-                  <span className="text-[#aaaaaa] capitalize">{tag}</span>
+                <div key={tag} style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                  <div style={{ width: "12px", height: "12px", borderRadius: "50%", backgroundColor: color, boxShadow: `0 0 8px ${color}40` }} />
+                  <span style={{ fontSize: "13px", color: "var(--text-primary)", textTransform: "capitalize" }}>{tag}</span>
                 </div>
               ))}
             </div>
@@ -258,13 +290,20 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 200 / 1000 }}
-            className="absolute bottom-8 right-8 bg-[#161616]/80 border border-[#2a2a2a] rounded-lg p-4 text-xs space-y-2"
+            className="card"
+            style={{
+              position: "absolute",
+              bottom: "32px",
+              right: "32px",
+              padding: "20px",
+              minWidth: "160px",
+            }}
           >
-            <div className="text-[#aaaaaa]">
-              <span className="font-semibold text-[#6c5ce7]">{filteredNodes.length}</span> nodes
+            <div style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "8px" }}>
+              <span style={{ fontSize: "20px", fontWeight: 600, color: "#a78bfa" }}>{filteredNodes.length}</span> nodes
             </div>
-            <div className="text-[#aaaaaa]">
-              <span className="font-semibold text-[#6c5ce7]">{filteredEdges.length}</span> connections
+            <div style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
+              <span style={{ fontSize: "20px", fontWeight: 600, color: "#a78bfa" }}>{filteredEdges.length}</span> connections
             </div>
           </motion.div>
         )}
@@ -278,57 +317,77 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: ANIMATION_NORMAL / 1000 }}
-            className="absolute inset-0 bg-black/50 z-40"
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              background: "rgba(0, 0, 0, 0.7)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 1000,
+            }}
             onClick={() => setDetailPanelOpen(false)}
           >
             <motion.div
-              initial={{ y: 20, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: 20, opacity: 0 }}
-              transition={{ duration: 300 / 1000 }}
-              className="absolute bottom-8 left-8 w-96 bg-[#161616] border border-[#2a2a2a] rounded-lg p-6 z-50"
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              transition={{ duration: 300 / 1000, ease: "easeOut" }}
+              style={{
+                background: "var(--bg-tertiary)",
+                borderRadius: "16px",
+                padding: "32px",
+                width: "90%",
+                maxWidth: "500px",
+                border: "1px solid var(--bg-elevated)",
+              }}
               onClick={(e) => e.stopPropagation()}
             >
               {/* Header */}
-              <div className="flex items-start justify-between mb-4">
-                <h3 className="text-lg font-semibold text-[#eaeaea] flex-1">Node Details</h3>
+              <div style={{ display: "flex", alignItems: "start", justifyContent: "space-between", marginBottom: "24px" }}>
+                <h3 style={{ fontSize: "24px", fontWeight: 600, color: "var(--text-primary)", flex: 1 }}>Node Details</h3>
                 <motion.button
                   onClick={() => setDetailPanelOpen(false)}
-                  whileHover={{ scale: 1.1 }}
-                  whileTap={{ scale: 0.95 }}
-                  className="p-1 text-[#aaaaaa] hover:text-[#eaeaea]"
+                  whileHover={{ scale: 1.1, rotate: 90 }}
+                  whileTap={{ scale: 0.9 }}
+                  style={{ padding: "8px", background: "transparent", border: "none", cursor: "pointer", color: "var(--text-secondary)", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "8px" }}
                 >
-                  <X className="w-4 h-4" />
+                  <X style={{ width: "20px", height: "20px" }} />
                 </motion.button>
               </div>
 
               {/* Content */}
-              <div className="space-y-4">
+              <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
                 {/* Label */}
                 <div>
-                  <p className="text-[#aaaaaa] text-xs uppercase mb-1">Label</p>
-                  <p className="text-[#eaeaea] text-sm line-clamp-3">{selectedNode.label}</p>
+                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px", fontWeight: 500 }}>Label</p>
+                  <p style={{ fontSize: "15px", color: "var(--text-primary)", lineHeight: "1.6", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{selectedNode.label}</p>
                 </div>
 
                 {/* ID */}
                 <div>
-                  <p className="text-[#aaaaaa] text-xs uppercase mb-1">ID</p>
-                  <code className="text-[#6c5ce7] text-xs font-mono">
+                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px", fontWeight: 500 }}>ID</p>
+                  <code style={{ fontSize: "13px", color: "#a78bfa", fontFamily: "monospace", background: "rgba(108, 92, 231, 0.1)", padding: "6px 12px", borderRadius: "8px", display: "inline-block" }}>
                     {selectedNode.id.slice(0, 16)}...
                   </code>
                 </div>
 
                 {/* Importance */}
                 <div>
-                  <p className="text-[#aaaaaa] text-xs uppercase mb-2">Importance</p>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 bg-[#2a2a2a] rounded-full h-2 overflow-hidden">
-                      <div
-                        className="bg-[#6c5ce7] h-full rounded-full"
-                        style={{ width: `${(selectedNode.importance || 0.5) * 100}%` }}
+                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px", fontWeight: 500 }}>Importance</p>
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                    <div style={{ flex: 1, background: "var(--bg-elevated)", borderRadius: "999px", height: "8px", overflow: "hidden" }}>
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ width: `${(selectedNode.importance || 0.5) * 100}%` }}
+                        transition={{ duration: 0.6, ease: "easeOut" }}
+                        style={{ background: "linear-gradient(90deg, #6c5ce7, #a78bfa)", height: "100%", borderRadius: "999px" }}
                       />
                     </div>
-                    <span className="text-[#aaaaaa] text-xs">
+                    <span style={{ fontSize: "14px", color: "var(--text-secondary)", minWidth: "3rem", textAlign: "right", fontWeight: 500 }}>
                       {((selectedNode.importance || 0.5) * 100).toFixed(0)}%
                     </span>
                   </div>
@@ -337,10 +396,18 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
                 {/* Tag */}
                 {selectedNode.tag && (
                   <div>
-                    <p className="text-[#aaaaaa] text-xs uppercase mb-2">Tag</p>
+                    <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px", fontWeight: 500 }}>Tag</p>
                     <span
-                      className="inline-block px-3 py-1 rounded text-white text-xs"
-                      style={{ backgroundColor: TAG_COLORS[selectedNode.tag] }}
+                      style={{ 
+                        display: "inline-block",
+                        padding: "8px 16px",
+                        borderRadius: "8px",
+                        color: "white",
+                        fontSize: "14px",
+                        fontWeight: 500,
+                        backgroundColor: TAG_COLORS[selectedNode.tag],
+                        boxShadow: `0 4px 12px ${TAG_COLORS[selectedNode.tag]}40`
+                      }}
                     >
                       {selectedNode.tag}
                     </span>
@@ -351,6 +418,6 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
           </motion.div>
         )}
       </AnimatePresence>
-    </div>
+    </motion.div>
   );
 }
