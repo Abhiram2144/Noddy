@@ -10,12 +10,16 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@tailwindcss/vite": "^4.2.1",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-opener": "^2",
     "framer-motion": "^12.35.0",
     "lucide-react": "^0.577.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "react-force-graph": "^1.48.2",
+    "react-force-graph-3d": "^1.29.1",
+    "tailwindcss": "^4.2.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

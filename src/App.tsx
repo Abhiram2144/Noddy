@@ -1,5 +1,7 @@
 import { useState } from "react";
+import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   LayoutDashboard,
@@ -18,8 +20,12 @@ import {
   Plus,
   LucideIcon,
   Beaker,
+  Network,
+  List,
 } from "lucide-react";
 import "./App.css";
+import { MemoryListView } from "./components/MemoryListView";
+import { MemoryGraphView } from "./components/MemoryGraphView";
 
 // ============================================================================
 // TYPES
@@ -34,6 +40,7 @@ interface NavItem {
 interface Reminder {
   id: string;
   content: string;
+  expires_at: number;
   time: string;
   source: "Local" | "Google" | "Outlook";
 }
@@ -83,33 +90,76 @@ const navItems: NavItem[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "reminders", label: "Reminders", icon: Bell },
   { id: "history", label: "History", icon: History },
-  { id: "memory", label: "Memory", icon: Brain },
+  { id: "memory-list", label: "Memory Bank", icon: List },
+  { id: "memory-graph", label: "Knowledge Graph", icon: Network },
   { id: "integrations", label: "Integrations", icon: Zap },
   { id: "test", label: "Test Commands", icon: Beaker },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
 // ============================================================================
-// MOCK DATA (Replace with real API calls)
+// DATA FETCHING UTILITIES
 // ============================================================================
 
-const mockReminders: Reminder[] = [
-  { id: "1", content: "Team meeting at 3 PM", time: "Today, 3:00 PM", source: "Local" },
-  { id: "2", content: "Call with client", time: "Tomorrow, 10:00 AM", source: "Google" },
-  { id: "3", content: "Submit report", time: "Friday, 5:00 PM", source: "Outlook" },
-];
+async function fetchReminders(): Promise<Reminder[]> {
+  try {
+    const data = await invoke<any>("get_reminders");
+    if (Array.isArray(data)) {
+      return data.map((reminder: any) => ({
+        id: reminder.id || Math.random().toString(),
+        content: reminder.content || reminder.title || "Untitled reminder",
+        expires_at: reminder.expires_at || Math.floor(Date.now() / 1000) + 3600,
+        time: reminder.time || reminder.due_date || "No time set",
+        source: reminder.source || "Local",
+      }));
+    }
+    return [];
+  } catch (error) {
+    console.warn("Failed to fetch reminders:", error);
+    return [];
+  }
+}
 
-const mockHistory: CommandHistory[] = [
-  { id: "1", command: "open chrome", intent: "open_app", timestamp: "2 minutes ago", success: true, duration: 42 },
-  { id: "2", command: "remember meeting notes", intent: "remember", timestamp: "5 minutes ago", success: true, duration: 18 },
-  { id: "3", command: "kill notepad.exe", intent: "kill_process", timestamp: "10 minutes ago", success: false, duration: 125 },
-];
+async function fetchCommandHistory(): Promise<CommandHistory[]> {
+  try {
+    const data = await invoke<any>("get_command_history", { limit: 3 });
+    if (Array.isArray(data)) {
+      return data.map((cmd: any) => ({
+        id: cmd.id || Math.random().toString(),
+        command: cmd.command || cmd.text || "Unknown command",
+        intent: cmd.intent || cmd.action || "unknown",
+        timestamp: cmd.timestamp || "Unknown time",
+        success: cmd.success !== false,
+        duration: cmd.duration || 0,
+      }));
+    }
+    return [];
+  } catch (error) {
+    console.warn("Failed to fetch command history:", error);
+    return [];
+  }
+}
 
-const mockMemories: Memory[] = [
-  { id: "1", content: "Project deadline is March 15th. Need to coordinate with design team.", timestamp: "2 hours ago" },
-  { id: "2", content: "Client prefers communication via email, not phone calls.", timestamp: "Yesterday" },
-  { id: "3", content: "API keys stored in LastPass under 'Production Environment'", timestamp: "3 days ago" },
-];
+async function fetchMemories(): Promise<Memory[]> {
+  try {
+    const data = await invoke<any>("get_memories", { limit: 2 });
+    if (Array.isArray(data)) {
+      return data.map((memory: any) => ({
+        id: memory.id || Math.random().toString(),
+        content: memory.content || memory.text || "Empty memory",
+        timestamp: memory.timestamp || "Unknown time",
+      }));
+    }
+    return [];
+  } catch (error) {
+    console.warn("Failed to fetch memories:", error);
+    return [];
+  }
+}
+
+// ============================================================================
+// MOCK DATA (Fallback for development)
+// ============================================================================
 
 const mockIntegrations: Integration[] = [
   { id: "1", name: "Google Calendar", icon: Calendar, connected: false, color: "#4285F4" },
@@ -122,11 +172,139 @@ const mockIntegrations: Integration[] = [
 
 function App() {
   const [currentView, setCurrentView] = useState("dashboard");
-  const [reminders, setReminders] = useState(mockReminders);
-  const [memories, setMemories] = useState(mockMemories);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [commandHistory, setCommandHistory] = useState<CommandHistory[]>([]);
+  const [memories, setMemories] = useState<Memory[]>([]);
   const [integrations, setIntegrations] = useState(mockIntegrations);
   const [searchQuery, setSearchQuery] = useState("");
   const [testResults, setTestResults] = useState<TestCommandResult[]>([]);
+  const [isLoadingDashboard, setIsLoadingDashboard] = useState(true);
+  const [pendingReminderNavigation, setPendingReminderNavigation] = useState(false);
+  const [activeReminderAction, setActiveReminderAction] = useState<{ id: number; content: string } | null>(null);
+  const [isActionProcessing, setIsActionProcessing] = useState(false);
+
+  // Fetch dashboard data on component mount
+  useEffect(() => {
+    const loadDashboardData = async () => {
+      setIsLoadingDashboard(true);
+      try {
+        const [remindersData, historyData, memoriesData] = await Promise.all([
+          fetchReminders(),
+          fetchCommandHistory(),
+          fetchMemories(),
+        ]);
+        
+        setReminders(remindersData);
+        setCommandHistory(historyData);
+        setMemories(memoriesData);
+      } finally {
+        setIsLoadingDashboard(false);
+      }
+    };
+
+    loadDashboardData();
+  }, []);
+
+  // Handle reminder events globally so navigation works from any screen.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    const setup = async () => {
+      unlisten = await listen("reminder_fired", async (event: any) => {
+        const reminderId = Number(event?.payload?.id);
+        const reminderContent = event?.payload?.content || "You have a reminder.";
+
+        const remindersData = await fetchReminders();
+        setReminders(remindersData);
+        setPendingReminderNavigation(true);
+
+        if (Number.isFinite(reminderId)) {
+          setActiveReminderAction({ id: reminderId, content: reminderContent });
+        }
+
+        // Show clickable desktop notification from frontend.
+        // This gives us click-through behavior similar to chat apps.
+        if ("Notification" in window) {
+          let permission = Notification.permission;
+          if (permission === "default") {
+            permission = await Notification.requestPermission();
+          }
+
+          if (permission === "granted") {
+            const notif = new Notification("Reminder", {
+              body: reminderContent,
+              tag: `reminder-${reminderId}-${Date.now()}`,
+              requireInteraction: true,
+            });
+
+            notif.onclick = () => {
+              window.focus();
+              setCurrentView("reminders");
+              setPendingReminderNavigation(false);
+              notif.close();
+            };
+          }
+        }
+      });
+    };
+
+    setup();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  // Desktop notification click usually focuses the app window.
+  // When focus returns and a reminder fired, route to Reminders view once.
+  useEffect(() => {
+    const onFocus = () => {
+      if (pendingReminderNavigation) {
+        setCurrentView("reminders");
+        setPendingReminderNavigation(false);
+      }
+    };
+
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [pendingReminderNavigation]);
+
+  const refreshReminderList = async () => {
+    const remindersData = await fetchReminders();
+    setReminders(remindersData);
+  };
+
+  const finishActiveReminder = async () => {
+    if (!activeReminderAction) return;
+    setIsActionProcessing(true);
+    try {
+      await invoke("finish_reminder", { reminderId: activeReminderAction.id });
+      await refreshReminderList();
+      setActiveReminderAction(null);
+      setPendingReminderNavigation(false);
+    } catch (error) {
+      console.error("Failed to finish reminder:", error);
+    } finally {
+      setIsActionProcessing(false);
+    }
+  };
+
+  const snoozeActiveReminder = async (snoozeMinutes: number) => {
+    if (!activeReminderAction) return;
+    setIsActionProcessing(true);
+    try {
+      await invoke("snooze_reminder", {
+        reminderId: activeReminderAction.id,
+        snoozeMinutes,
+      });
+      await refreshReminderList();
+      setActiveReminderAction(null);
+      setPendingReminderNavigation(false);
+    } catch (error) {
+      console.error("Failed to snooze reminder:", error);
+    } finally {
+      setIsActionProcessing(false);
+    }
+  };
 
   return (
     <div className="app-container">
@@ -167,13 +345,19 @@ function App() {
       <main className="main-panel">
         <AnimatePresence mode="wait">
           {currentView === "dashboard" && (
-            <DashboardView key="dashboard" reminders={reminders} history={mockHistory} memories={memories} />
+            <DashboardView key="dashboard" reminders={reminders} history={commandHistory} memories={memories} isLoading={isLoadingDashboard} />
           )}
           {currentView === "reminders" && (
             <RemindersView key="reminders" reminders={reminders} setReminders={setReminders} />
           )}
           {currentView === "history" && (
-            <HistoryView key="history" history={mockHistory} />
+            <HistoryView key="history" history={commandHistory} />
+          )}
+          {currentView === "memory-list" && (
+            <MemoryListView key="memory-list" />
+          )}
+          {currentView === "memory-graph" && (
+            <MemoryGraphView key="memory-graph" />
           )}
           {currentView === "memory" && (
             <MemoryView key="memory" memories={memories} setMemories={setMemories} searchQuery={searchQuery} setSearchQuery={setSearchQuery} />
@@ -189,6 +373,55 @@ function App() {
           )}
         </AnimatePresence>
       </main>
+
+      <AnimatePresence>
+        {activeReminderAction && (
+          <motion.div
+            initial={{ opacity: 0, y: 30 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            transition={{ duration: 0.2 }}
+            style={{
+              position: "fixed",
+              right: "24px",
+              bottom: "24px",
+              width: "360px",
+              zIndex: 2000,
+              background: "rgba(20, 24, 31, 0.96)",
+              border: "1px solid rgba(74, 158, 255, 0.35)",
+              borderRadius: "14px",
+              boxShadow: "0 12px 28px rgba(0, 0, 0, 0.35)",
+              backdropFilter: "blur(8px)",
+              padding: "16px",
+            }}
+          >
+            <div style={{ fontSize: "12px", color: "#8fb8ff", marginBottom: "6px", letterSpacing: "0.2px" }}>
+              Reminder
+            </div>
+            <div style={{ fontSize: "14px", color: "#f3f6fb", marginBottom: "14px", lineHeight: 1.4 }}>
+              {activeReminderAction.content}
+            </div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => snoozeActiveReminder(10)}
+                disabled={isActionProcessing}
+                style={{ flex: 1 }}
+              >
+                Snooze 10m
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={finishActiveReminder}
+                disabled={isActionProcessing}
+                style={{ flex: 1 }}
+              >
+                Finish
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -197,7 +430,7 @@ function App() {
 // DASHBOARD VIEW
 // ============================================================================
 
-function DashboardView({ reminders, history, memories }: { reminders: Reminder[], history: CommandHistory[], memories: Memory[] }) {
+function DashboardView({ reminders, history, memories, isLoading }: { reminders: Reminder[], history: CommandHistory[], memories: Memory[], isLoading: boolean }) {
   return (
     <motion.div
       className="panel-container"
@@ -211,14 +444,24 @@ function DashboardView({ reminders, history, memories }: { reminders: Reminder[]
         <p className="panel-subtitle">Overview of your assistant's activity</p>
       </div>
 
-      <div className="grid grid-2">
-        {/* Upcoming Reminders Card */}
+      {isLoading ? (
         <motion.div
-          className="card"
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          whileHover={{ y: -4 }}
+          className="empty-state"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+        >
+          <div style={{ fontSize: "48px", marginBottom: "16px", animation: "pulse 1.5s infinite" }}>⏳</div>
+          <p>Loading your dashboard...</p>
+        </motion.div>
+      ) : (
+        <div className="grid grid-2">
+          {/* Upcoming Reminders Card */}
+          <motion.div
+            className="card"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1 }}
+            whileHover={{ y: -4 }}
         >
           <div className="card-header">
             <h3 className="card-title">
@@ -338,6 +581,7 @@ function DashboardView({ reminders, history, memories }: { reminders: Reminder[]
           </div>
         </motion.div>
       </div>
+      )}
     </motion.div>
   );
 }
@@ -347,8 +591,110 @@ function DashboardView({ reminders, history, memories }: { reminders: Reminder[]
 // ============================================================================
 
 function RemindersView({ reminders, setReminders }: { reminders: Reminder[], setReminders: React.Dispatch<React.SetStateAction<Reminder[]>> }) {
+  const [showModal, setShowModal] = useState(false);
+  const [reminderContent, setReminderContent] = useState("");
+  const [timeAmount, setTimeAmount] = useState("1");
+  const [timeUnit, setTimeUnit] = useState("hours");
+  const [isCreating, setIsCreating] = useState(false);
+  const [currentTime, setCurrentTime] = useState(Math.floor(Date.now() / 1000));
+
+  // Update current time every minute for dynamic time display
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentTime(Math.floor(Date.now() / 1000));
+    }, 60000); // Update every 60 seconds
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // Format relative time without seconds (minutes, hours, days only)
+  const formatRelativeTime = (expiresAt: number) => {
+    const diff = expiresAt - currentTime;
+    
+    if (diff < 0) {
+      // Past time
+      const absDiff = Math.abs(diff);
+      if (absDiff < 3600) {
+        const mins = Math.floor(absDiff / 60);
+        return mins === 0 ? "just now" : `${mins} minute${mins !== 1 ? 's' : ''} ago`;
+      } else if (absDiff < 86400) {
+        const hours = Math.floor(absDiff / 3600);
+        return `${hours} hour${hours !== 1 ? 's' : ''} ago`;
+      } else {
+        const days = Math.floor(absDiff / 86400);
+        return `${days} day${days !== 1 ? 's' : ''} ago`;
+      }
+    } else {
+      // Future time
+      if (diff < 3600) {
+        const mins = Math.floor(diff / 60);
+        return mins === 0 ? "in less than a minute" : `in ${mins} minute${mins !== 1 ? 's' : ''}`;
+      } else if (diff < 86400) {
+        const hours = Math.floor(diff / 3600);
+        return `in ${hours} hour${hours !== 1 ? 's' : ''}`;
+      } else {
+        const days = Math.floor(diff / 86400);
+        return `in ${days} day${days !== 1 ? 's' : ''}`;
+      }
+    }
+  };
+
   const deleteReminder = (id: string) => {
     setReminders(reminders.filter(r => r.id !== id));
+  };
+
+  const createReminder = async () => {
+    if (!reminderContent.trim()) {
+      alert("Please enter a reminder message");
+      return;
+    }
+
+    const amount = parseInt(timeAmount, 10);
+    if (isNaN(amount) || amount <= 0) {
+      alert("Please enter a valid time amount");
+      return;
+    }
+
+    setIsCreating(true);
+    try {
+      // Calculate trigger_at timestamp
+      let delaySeconds = 0;
+      if (timeUnit === "minutes") delaySeconds = amount * 60;
+      else if (timeUnit === "hours") delaySeconds = amount * 3600;
+      else if (timeUnit === "days") delaySeconds = amount * 86400;
+
+      const trigger_at = Math.floor(Date.now() / 1000) + delaySeconds;
+
+      const intentJson = JSON.stringify({
+        name: "set_reminder",
+        payload: {
+          content: reminderContent,
+          trigger_at: trigger_at
+        }
+      });
+
+      const result = await invoke<{ success: boolean; message: string }>("execute_action", {
+        intentJson,
+      });
+
+      if (result.success) {
+        alert(`✅ Reminder set! You'll be notified in ${timeAmount} ${timeUnit}.`);
+        setShowModal(false);
+        setReminderContent("");
+        setTimeAmount("1");
+        setTimeUnit("hours");
+        
+        // Refresh reminders list
+        const updated = await invoke<Reminder[]>("get_reminders", { limit: 10 });
+        setReminders(updated);
+      } else {
+        alert(`❌ Failed: ${result.message}`);
+      }
+    } catch (error) {
+      alert(`❌ Error: ${error}`);
+    } finally {
+      setIsCreating(false);
+    }
   };
 
   return (
@@ -365,12 +711,129 @@ function RemindersView({ reminders, setReminders }: { reminders: Reminder[], set
             <h1 className="panel-title">Reminders</h1>
             <p className="panel-subtitle">Manage your upcoming reminders</p>
           </div>
-          <button className="btn btn-primary">
+          <motion.button 
+            className="btn btn-primary"
+            onClick={() => setShowModal(true)}
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+          >
             <Plus style={{ width: "16px", height: "16px" }} />
             New Reminder
-          </button>
+          </motion.button>
         </div>
       </div>
+
+      {/* New Reminder Modal */}
+      <AnimatePresence>
+        {showModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              background: "rgba(0, 0, 0, 0.7)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 1000,
+            }}
+            onClick={() => setShowModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              style={{
+                background: "var(--bg-tertiary)",
+                borderRadius: "16px",
+                padding: "32px",
+                width: "90%",
+                maxWidth: "500px",
+                border: "1px solid var(--bg-elevated)",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h2 style={{ fontSize: "24px", fontWeight: 600, marginBottom: "24px", color: "var(--text-primary)" }}>
+                🔔 Create New Reminder
+              </h2>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+                <div>
+                  <label style={{ display: "block", fontSize: "13px", fontWeight: 500, marginBottom: "8px", color: "var(--text-secondary)" }}>
+                    What do you want to be reminded about?
+                  </label>
+                  <textarea
+                    value={reminderContent}
+                    onChange={(e) => setReminderContent(e.target.value)}
+                    placeholder="e.g., Call mom, Take medicine, Team meeting..."
+                    className="search-input"
+                    style={{
+                      minHeight: "80px",
+                      resize: "vertical",
+                      width: "100%",
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: "block", fontSize: "13px", fontWeight: 500, marginBottom: "8px", color: "var(--text-secondary)" }}>
+                    When should I remind you?
+                  </label>
+                  <div style={{ display: "flex", gap: "12px" }}>
+                    <input
+                      type="number"
+                      value={timeAmount}
+                      onChange={(e) => setTimeAmount(e.target.value)}
+                      min="1"
+                      className="search-input"
+                      style={{ width: "100px" }}
+                    />
+                    <select
+                      value={timeUnit}
+                      onChange={(e) => setTimeUnit(e.target.value)}
+                      className="search-input"
+                      style={{ flex: 1 }}
+                    >
+                      <option value="minutes">Minutes</option>
+                      <option value="hours">Hours</option>
+                      <option value="days">Days</option>
+                    </select>
+                  </div>
+                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "8px" }}>
+                    You'll get a desktop notification in {timeAmount} {timeUnit}
+                  </p>
+                </div>
+
+                <div style={{ display: "flex", gap: "12px", marginTop: "12px" }}>
+                  <motion.button
+                    className="btn btn-primary"
+                    onClick={createReminder}
+                    disabled={isCreating}
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    style={{ flex: 1 }}
+                  >
+                    {isCreating ? "Creating..." : "Create Reminder"}
+                  </motion.button>
+                  <motion.button
+                    className="btn btn-secondary"
+                    onClick={() => setShowModal(false)}
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                  >
+                    Cancel
+                  </motion.button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {reminders.length === 0 ? (
@@ -401,7 +864,7 @@ function RemindersView({ reminders, setReminders }: { reminders: Reminder[], set
                   <div style={{ fontSize: "13px", color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: "12px" }}>
                     <span>
                       <Clock style={{ width: "14px", height: "14px", display: "inline", marginRight: "4px" }} />
-                      {reminder.time}
+                      {formatRelativeTime(reminder.expires_at)}
                     </span>
                     <span className="badge badge-success" style={{ fontSize: "11px" }}>{reminder.source}</span>
                   </div>
@@ -696,10 +1159,40 @@ function parseTestCommand(input: string): string {
     return JSON.stringify({ name: "search_memory", payload: { keyword } });
   }
 
-  // remind me to X
+  // remind me to X [time spec]
   if (trimmed.startsWith("remind me to ")) {
-    const content = input.slice(13).trim();
-    return JSON.stringify({ name: "set_reminder", payload: { content, trigger_at: Math.floor(Date.now() / 1000) + 3600 } });
+    const remainder = input.slice(13).trim();
+    let content = remainder;
+    let delaySeconds = 3600; // Default: 1 hour
+
+    // Parse time specifications: "in X minutes/hours/days", "tomorrow", "at HH:mm"
+    const inMatch = remainder.match(/^(.+?)\s+in\s+(\d+)\s+(minute|hour|day)s?$/i);
+    if (inMatch) {
+      content = inMatch[1].trim();
+      const amount = parseInt(inMatch[2], 10);
+      const unit = inMatch[3].toLowerCase();
+      if (unit === "minute") delaySeconds = amount * 60;
+      else if (unit === "hour") delaySeconds = amount * 3600;
+      else if (unit === "day") delaySeconds = amount * 86400;
+    } else {
+      const tomorrowMatch = remainder.match(/^(.+?)\s+tomorrow\s+at\s+(\d{1,2}):(\d{2})(am|pm)?$/i);
+      if (tomorrowMatch) {
+        content = tomorrowMatch[1].trim();
+        let hour = parseInt(tomorrowMatch[2], 10);
+        const minute = parseInt(tomorrowMatch[3], 10);
+        const ampm = tomorrowMatch[4]?.toLowerCase();
+        
+        if (ampm === "pm" && hour !== 12) hour += 12;
+        if (ampm === "am" && hour === 12) hour = 0;
+        
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        tomorrow.setHours(hour, minute, 0, 0);
+        delaySeconds = Math.floor((tomorrow.getTime() - Date.now()) / 1000);
+      }
+    }
+
+    return JSON.stringify({ name: "set_reminder", payload: { content, trigger_at: Math.floor(Date.now() / 1000) + delaySeconds } });
   }
 
   // google X / search web X / what is X / what's X
@@ -808,6 +1301,17 @@ function TestCommandsView({
     setTestResults([]);
   };
 
+  const checkRemindersNow = async () => {
+    try {
+      const result = await invoke<string>("check_reminders_now");
+      console.log("✓ Manual reminder check:", result);
+      alert("Reminder check completed! Check console for details.");
+    } catch (error) {
+      console.error("❌ Reminder check failed:", error);
+      alert(`Failed to check reminders: ${error}`);
+    }
+  };
+
   return (
     <motion.div
       className="panel-container"
@@ -867,16 +1371,28 @@ function TestCommandsView({
               {isLoading ? "Executing..." : "Execute Command"}
             </motion.button>
             
-            {testResults.length > 0 && (
+            <div style={{ display: "flex", gap: "12px" }}>
               <motion.button
                 className="btn btn-secondary"
-                onClick={clearResults}
+                onClick={checkRemindersNow}
                 whileHover={{ scale: 1.02 }}
                 whileTap={{ scale: 0.98 }}
+                title="Manually trigger reminder check (for debugging)"
               >
-                Clear Results
+                🔔 Check Reminders
               </motion.button>
-            )}
+              
+              {testResults.length > 0 && (
+                <motion.button
+                  className="btn btn-secondary"
+                  onClick={clearResults}
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  Clear Results
+                </motion.button>
+              )}
+            </div>
           </div>
         </div>
       </motion.div>

@@ -3,9 +3,19 @@ use std::collections::HashMap;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri_plugin_opener::OpenerExt;
-use tauri::Manager;
+use tauri::{Manager, Emitter};
 use rusqlite::{Connection, params};
 use std::sync::Mutex;
+
+// Database module for migrations and schema management
+mod database;
+
+// Service modules for CRUD operations
+mod memory_store;
+mod memory_tag_service;
+mod reminder_store;
+mod history_store;
+mod memory_graph;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -1163,16 +1173,10 @@ fn log_action(action: &str, value: &str, success: bool) {
 // Memory operations
 fn save_memory(memory_store: &MemoryStore, content: &str) -> Result<(), String> {
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0) as i64;
     
-    conn.execute(
-        "INSERT INTO memories (content, created_at, expires_at) VALUES (?1, ?2, NULL)",
-        params![content, timestamp],
-    )
-    .map_err(|e| format!("Database error: {}", e))?;
+    // Use memory_store service to create memory
+    let content_string = content.to_string();
+    memory_store::create_memory(&conn, content_string, None)?;
     
     Ok(())
 }
@@ -1180,16 +1184,11 @@ fn save_memory(memory_store: &MemoryStore, content: &str) -> Result<(), String> 
 fn search_memories(memory_store: &MemoryStore, keyword: &str) -> Result<Vec<String>, String> {
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
-    let search_pattern = format!("%{}%", keyword);
-    let mut stmt = conn
-        .prepare("SELECT content FROM memories WHERE content LIKE ?1 ORDER BY created_at DESC LIMIT 10")
-        .map_err(|e| format!("Database error: {}", e))?;
+    // Use memory_store service to search
+    let search_results = memory_store::search_memories(&conn, keyword.to_string(), 10)?;
     
-    let memories = stmt
-        .query_map(params![search_pattern], |row| row.get(0))
-        .map_err(|e| format!("Query error: {}", e))?
-        .collect::<Result<Vec<String>, _>>()
-        .map_err(|e| format!("Row mapping error: {}", e))?;
+    // Extract content from Memory structs
+    let memories = search_results.iter().map(|m| m.content.clone()).collect();
     
     Ok(memories)
 }
@@ -1201,75 +1200,80 @@ fn set_reminder(memory_store: &MemoryStore, json_value: &str) -> Result<(), Stri
     
     let content = parsed["content"]
         .as_str()
-        .ok_or("Missing 'content' field")?;
+        .ok_or("Missing 'content' field")?
+        .to_string();
     
     let trigger_at = parsed["trigger_at"]
         .as_i64()
         .ok_or("Missing or invalid 'trigger_at' field")?;
     
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-    let created_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0) as i64;
     
-    conn.execute(
-        "INSERT INTO memories (content, created_at, expires_at) VALUES (?1, ?2, ?3)",
-        params![content, created_at, trigger_at],
-    )
-    .map_err(|e| format!("Database error: {}", e))?;
+    println!("📝 Storing reminder: '{}' at timestamp {}", content, trigger_at);
+    
+    // Use reminder_store service to create reminder
+    let reminder_id = reminder_store::create_reminder(&conn, content.clone(), trigger_at, None)?;
+    
+    println!("✓ Reminder stored successfully with ID: {}", reminder_id);
     
     Ok(())
 }
 
-fn check_expired_reminders(memory_store: &MemoryStore, event_bus: &EventBus) -> Result<(), String> {
+fn check_expired_reminders(memory_store: &MemoryStore, event_bus: &EventBus, app_handle: Option<&tauri::AppHandle>) -> Result<(), String> {
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
-    let current_time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0) as i64;
+    // Use reminder_store service to get due reminders
+    let due_reminders = reminder_store::get_due_reminders(&conn, 0)?;
     
-    // Query expired reminders
-    let mut stmt = conn
-        .prepare("SELECT id, content FROM memories WHERE expires_at IS NOT NULL AND expires_at <= ?1")
-        .map_err(|e| format!("Database error: {}", e))?;
-    
-    let expired: Vec<(i64, String)> = stmt
-        .query_map(params![current_time], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
-        .map_err(|e| format!("Query error: {}", e))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Row mapping error: {}", e))?;
-    
-    // Process each expired reminder
-    for (id, content) in expired {
-        println!("🔔 REMINDER: {}", content);
+    // Process each due reminder
+    for reminder in due_reminders {
+        println!("🔔 REMINDER: {}", reminder.content);
+        
+        // Update reminder status to triggered
+        let _ = reminder_store::update_reminder_status(&conn, &reminder.id, reminder_store::status::TRIGGERED);
+        
+        // Emit reminder event to frontend. Frontend shows clickable desktop notification.
+        if let Some(app) = app_handle {
+            let _ = app.emit("reminder_fired", serde_json::json!({
+                "id": reminder.id,
+                "content": reminder.content
+            }));
+            println!("✓ Reminder event emitted to frontend");
+        }
         
         // Emit ReminderTriggered event for telemetry and observability
-        event_bus.emit(&Event::ReminderTriggered(content.clone()));
-        
-        // Delete the reminder
-        conn.execute("DELETE FROM memories WHERE id = ?1", params![id])
-            .map_err(|e| format!("Failed to delete reminder: {}", e))?;
+        event_bus.emit(&Event::ReminderTriggered(reminder.content));
     }
     
     Ok(())
 }
 
+#[tauri::command]
+fn finish_reminder(memory_store: tauri::State<MemoryStore>, reminder_id: String) -> Result<String, String> {
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    
+    // Delete reminder using service layer
+    reminder_store::delete_reminder(&conn, &reminder_id)?;
+    Ok("Reminder finished".to_string())
+}
+
+#[tauri::command]
+fn snooze_reminder(memory_store: tauri::State<MemoryStore>, reminder_id: String, snooze_minutes: i64) -> Result<String, String> {
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    
+    // Snooze reminder using service layer
+    reminder_store::snooze_reminder(&conn, &reminder_id, snooze_minutes)?;
+    Ok(format!("Reminder snoozed for {} minutes", snooze_minutes.max(1)))
+}
+
 fn recall_memories(memory_store: &MemoryStore) -> Result<Vec<String>, String> {
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
-    let mut stmt = conn
-        .prepare("SELECT content FROM memories ORDER BY created_at DESC LIMIT 10")
-        .map_err(|e| format!("Database error: {}", e))?;
+    // Use memory_store service to retrieve memories
+    let retrieved_memories = memory_store::get_memories(&conn, 10, 0)?;
     
-    let memories = stmt
-        .query_map([], |row| row.get(0))
-        .map_err(|e| format!("Query error: {}", e))?
-        .collect::<Result<Vec<String>, _>>()
-        .map_err(|e| format!("Row mapping error: {}", e))?;
+    // Extract content from Memory structs
+    let memories = retrieved_memories.iter().map(|m| m.content.clone()).collect();
     
     Ok(memories)
 }
@@ -1286,6 +1290,7 @@ fn execute_action(
     permissions: tauri::State<PermissionManager>,
 ) -> Result<ActionResponse, String> {
     let start_time = std::time::Instant::now();
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
     // Deserialize JSON string into typed Intent enum
     let intent: Intent = serde_json::from_str(&intent_json)
@@ -1297,6 +1302,20 @@ fn execute_action(
     
     // Emit IntentReceived event
     event_bus.emit(&Event::IntentReceived(intent_json.clone()));
+    
+    // Extract intent name for telemetry
+    let intent_name = match &intent {
+        Intent::ListApps => "list_apps",
+        Intent::OpenApp { .. } => "open_app",
+        Intent::OpenUrl { .. } => "open_url",
+        Intent::SearchWeb { .. } => "search_web",
+        Intent::KillProcess { .. } => "kill_process",
+        Intent::Remember { .. } => "remember",
+        Intent::RecallMemory => "recall_memory",
+        Intent::SearchMemory { .. } => "search_memory",
+        Intent::SetReminder { .. } => "set_reminder",
+        Intent::Unknown { .. } => "unknown",
+    };
     
     // Type-safe dispatch using enum matching (no string comparisons)
     let response = match intent {
@@ -1720,9 +1739,213 @@ fn execute_action(
         },
     };
 
+    // Log command execution to history store
+    let duration_ms = start_time.elapsed().as_millis();
+    let error_msg = if response.success {
+        None
+    } else {
+        Some(response.message.clone())
+    };
+    
+    // Log command to command_history table
+    let _ = history_store::log_command(
+        &conn,
+        intent_json.clone(),
+        intent_name.to_string(),
+        duration_ms,
+        response.success,
+        error_msg,
+    );
+    
     // Log the dispatched intent for debugging
     log_intent_dispatch(&intent_json, response.success);
     Ok(response)
+}
+
+// ============================================================================
+// DATA RETRIEVAL COMMANDS
+// ============================================================================
+
+#[tauri::command]
+fn get_memories(memory_store: tauri::State<MemoryStore>, limit: Option<i64>) -> Result<Vec<serde_json::Value>, String> {
+    let limit = limit.unwrap_or(10) as i32;
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    
+    // Use memory_store service to retrieve memories
+    let memories_list = memory_store::get_memories(&conn, limit, 0)?;
+    
+    // Convert Memory structs to JSON response
+    let json_memories = memories_list
+        .iter()
+        .map(|memory| {
+            serde_json::json!({
+                "id": memory.id,
+                "content": memory.content,
+                "timestamp": format_timestamp(memory.created_at),
+                "importance": memory.importance,
+                "source": memory.source
+            })
+        })
+        .collect();
+    
+    Ok(json_memories)
+}
+
+#[tauri::command]
+fn get_reminders(memory_store: tauri::State<MemoryStore>, limit: Option<i64>) -> Result<Vec<serde_json::Value>, String> {
+    let _limit = limit.unwrap_or(10);
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    
+    // Use reminder_store service to retrieve pending reminders
+    let reminders_list = reminder_store::get_pending_reminders(&conn)?;
+    
+    // Convert Reminder structs to JSON response
+    let json_reminders = reminders_list
+        .iter()
+        .map(|reminder| {
+            serde_json::json!({
+                "id": reminder.id,
+                "content": reminder.content,
+                "trigger_at": reminder.trigger_at,
+                "time": format_timestamp(reminder.trigger_at),
+                "status": reminder.status,
+                "source": reminder.source,
+                "memory_id": reminder.memory_id
+            })
+        })
+        .collect();
+    
+    Ok(json_reminders)
+}
+
+#[tauri::command]
+fn get_command_history(limit: Option<i64>) -> Result<Vec<serde_json::Value>, String> {
+    // TODO: Implement command history tracking in execute_action
+    // For now, return empty array
+    let _limit = limit.unwrap_or(10);
+    Ok(Vec::new())
+}
+
+// Debug command to manually trigger reminder check
+#[tauri::command]
+fn check_reminders_now(
+    memory_store: tauri::State<MemoryStore>,
+    event_bus: tauri::State<EventBus>,
+    app: tauri::AppHandle
+) -> Result<String, String> {
+    println!("🔍 Manual reminder check triggered");
+    check_expired_reminders(&memory_store, &event_bus, Some(&app))?;
+    Ok("Reminder check completed".to_string())
+}
+
+// Graph command to rebuild memory relationship graph
+#[tauri::command]
+fn rebuild_memory_graph(memory_store: tauri::State<MemoryStore>) -> Result<serde_json::Value, String> {
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    
+    println!("🔗 Rebuilding memory relationship graph...");
+    let (cleared_edges, created_edges) = memory_graph::rebuild_memory_graph(&conn)?;
+    
+    println!("✓ Graph rebuild complete: cleared {} existing edges, created {} new edges", 
+             cleared_edges, created_edges);
+    
+    Ok(serde_json::json!({
+        "cleared_edges": cleared_edges,
+        "created_edges": created_edges,
+        "status": "completed"
+    }))
+}
+
+// Get related memories for a specific memory
+#[tauri::command]
+fn get_related_memories(
+    memory_store: tauri::State<MemoryStore>,
+    memory_id: String,
+    min_weight: Option<f64>
+) -> Result<Vec<serde_json::Value>, String> {
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let min_weight = min_weight.unwrap_or(0.0);
+    
+    let related = memory_graph::get_related_memories(&conn, memory_id, min_weight)?;
+    
+    let json_related: Vec<serde_json::Value> = related
+        .iter()
+        .map(|(memory_id, weight)| {
+            serde_json::json!({
+                "memory_id": memory_id,
+                "weight": weight,
+                "relationship": "shared_tag"
+            })
+        })
+        .collect();
+    
+    Ok(json_related)
+}
+
+// Get graph statistics
+#[tauri::command]
+fn get_graph_stats(memory_store: tauri::State<MemoryStore>) -> Result<serde_json::Value, String> {
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    
+    let stats = memory_graph::get_graph_stats(&conn)?;
+    
+    Ok(serde_json::json!({
+        "total_edges": stats.total_edges,
+        "shared_tag_edges": stats.shared_tag_edges,
+        "average_weight": stats.average_weight,
+        "memories_with_edges": stats.memories_with_edges
+    }))
+}
+
+// Get memory graph for visualization (react-force-graph compatible)
+#[tauri::command]
+fn get_memory_graph(
+    memory_store: tauri::State<MemoryStore>,
+    limit: Option<i64>
+) -> Result<serde_json::Value, String> {
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let limit = (limit.unwrap_or(100) as i32).max(1).min(1000);
+    
+    let graph_data = memory_graph::get_memory_graph(&conn, limit)?;
+    
+    Ok(serde_json::json!({
+        "nodes": graph_data.nodes,
+        "edges": graph_data.edges
+    }))
+}
+
+/// Helper function to format Unix timestamp to readable string
+fn format_timestamp(timestamp: i64) -> String {
+    use std::time::UNIX_EPOCH;
+    
+    // Simple formatting - shows time relative to now
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
+    
+    let diff = timestamp - now;
+    if diff < 0 {
+        let abs_diff = (-diff) as u64;
+        // Skip seconds, start from minutes
+        if abs_diff < 3600 {
+            format!("{} minutes ago", abs_diff / 60)
+        } else if abs_diff < 86400 {
+            format!("{} hours ago", abs_diff / 3600)
+        } else {
+            format!("{} days ago", abs_diff / 86400)
+        }
+    } else {
+        let abs_diff = diff as u64;
+        // Skip seconds, start from minutes
+        if abs_diff < 3600 {
+            format!("in {} minutes", abs_diff / 60)
+        } else if abs_diff < 86400 {
+            format!("in {} hours", abs_diff / 3600)
+        } else {
+            format!("in {} days", abs_diff / 86400)
+        }
+    }
 }
 
 /// Helper function to log intent dispatch (for debugging)
@@ -1800,6 +2023,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(registry)
         .manage(event_bus)
         .manage(permissions)
@@ -1818,30 +2042,13 @@ pub fn run() {
             let conn = Connection::open(&db_path)
                 .expect("Failed to open database");
             
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS memories (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    content TEXT NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    expires_at INTEGER
-                )",
-                [],
-            )
-            .expect("Failed to create memories table");
+            // Initialize database schema with migrations
+            database::initialize_database(&conn)
+                .expect("Failed to initialize database schema");
             
-            // Check if expires_at column exists (for existing databases)
-            let column_exists: Result<i64, _> = conn.query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name='expires_at'",
-                [],
-                |row| row.get(0),
-            );
-            
-            if let Ok(0) = column_exists {
-                // Column doesn't exist, add it
-                conn.execute("ALTER TABLE memories ADD COLUMN expires_at INTEGER", [])
-                    .expect("Failed to add expires_at column");
-                println!("✓ Added expires_at column to memories table");
-            }
+            // Verify database integrity
+            database::verify_database(&conn)
+                .expect("Failed to verify database integrity");
             
             println!("✓ Memory database initialized: {}", db_path.display());
             
@@ -1858,22 +2065,36 @@ pub fn run() {
             // Spawn background reminder checker thread
             // Clone event_bus for background thread to emit ReminderTriggered events
             let event_bus_clone = event_bus_for_setup.clone();
+            let app_handle = app.handle().clone();
             std::thread::spawn(move || {
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(30));
                     
-                    if let Err(e) = check_expired_reminders(&memory_store_clone, &event_bus_clone) {
+                    if let Err(e) = check_expired_reminders(&memory_store_clone, &event_bus_clone, Some(&app_handle)) {
                         eprintln!("⚠️  Reminder check failed: {}", e);
                     }
                 }
             });
             
-            println!("✓ Background reminder checker started");
+            println!("✓ Background reminder checker started (checks every 30 seconds)");
             
             app.manage(memory_store);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet, execute_action])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            execute_action,
+            get_memories,
+            get_reminders,
+            get_command_history,
+            check_reminders_now,
+            finish_reminder,
+            snooze_reminder,
+            rebuild_memory_graph,
+            get_related_memories,
+            get_graph_stats,
+            get_memory_graph
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
