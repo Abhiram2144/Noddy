@@ -4,7 +4,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri_plugin_opener::OpenerExt;
 use tauri::{Manager, Emitter};
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 use std::sync::Mutex;
 
 // Database module for migrations and schema management
@@ -12,10 +12,10 @@ mod database;
 
 // Service modules for CRUD operations
 mod memory_store;
-mod memory_tag_service;
 mod reminder_store;
 mod history_store;
 mod memory_graph;
+mod auth_service;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -176,118 +176,7 @@ impl PermissionManager {
 }
 
 // ============================================================================
-// INFRASTRUCTURE LAYER 3: REPOSITORY ABSTRACTION
-// ============================================================================
-// Trait-based memory storage allows different backends (SQLite, Cloud, etc)
-// ============================================================================
-
-trait MemoryRepository: Send + Sync {
-    fn save(&self, content: String) -> Result<(), String>;
-    fn recall(&self) -> Result<Vec<String>, String>;
-    fn search(&self, keyword: String) -> Result<Vec<String>, String>;
-}
-
-struct SQLiteMemoryRepository {
-    conn: std::sync::Arc<Mutex<Connection>>,
-}
-
-impl SQLiteMemoryRepository {
-    fn new(conn: std::sync::Arc<Mutex<Connection>>) -> Self {
-        SQLiteMemoryRepository { conn }
-    }
-}
-
-impl MemoryRepository for SQLiteMemoryRepository {
-    fn save(&self, content: String) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0) as i64;
-        
-        conn.execute(
-            "INSERT INTO memories (content, created_at, expires_at) VALUES (?1, ?2, NULL)",
-            params![content, timestamp],
-        )
-        .map_err(|e| format!("Database error: {}", e))?;
-        
-        Ok(())
-    }
-    
-    fn recall(&self) -> Result<Vec<String>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-        
-        let mut stmt = conn
-            .prepare("SELECT content FROM memories ORDER BY created_at DESC LIMIT 10")
-            .map_err(|e| format!("Database error: {}", e))?;
-        
-        let memories = stmt
-            .query_map([], |row| row.get(0))
-            .map_err(|e| format!("Query error: {}", e))?
-            .collect::<Result<Vec<String>, _>>()
-            .map_err(|e| format!("Row mapping error: {}", e))?;
-        
-        Ok(memories)
-    }
-    
-    fn search(&self, keyword: String) -> Result<Vec<String>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-        
-        let search_pattern = format!("%{}%", keyword);
-        let mut stmt = conn
-            .prepare("SELECT content FROM memories WHERE content LIKE ?1 ORDER BY created_at DESC LIMIT 10")
-            .map_err(|e| format!("Database error: {}", e))?;
-        
-        let memories = stmt
-            .query_map(params![search_pattern], |row| row.get(0))
-            .map_err(|e| format!("Query error: {}", e))?
-            .collect::<Result<Vec<String>, _>>()
-            .map_err(|e| format!("Row mapping error: {}", e))?;
-        
-        Ok(memories)
-    }
-}
-
-// ============================================================================
-// INFRASTRUCTURE LAYER 4: SCHEDULER ABSTRACTION
-// ============================================================================
-// Allows different reminder scheduling backends (polling, cron, OS-native)
-// ============================================================================
-
-trait Scheduler: Send + Sync {
-    fn schedule(&self, timestamp: i64, content: String) -> Result<(), String>;
-}
-
-struct PollingScheduler {
-    conn: std::sync::Arc<Mutex<Connection>>,
-}
-
-impl PollingScheduler {
-    fn new(conn: std::sync::Arc<Mutex<Connection>>) -> Self {
-        PollingScheduler { conn }
-    }
-}
-
-impl Scheduler for PollingScheduler {
-    fn schedule(&self, timestamp: i64, content: String) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-        let created_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0) as i64;
-        
-        conn.execute(
-            "INSERT INTO memories (content, created_at, expires_at) VALUES (?1, ?2, ?3)",
-            params![content, created_at, timestamp],
-        )
-        .map_err(|e| format!("Database error: {}", e))?;
-        
-        Ok(())
-    }
-}
-
-// ============================================================================
-// INFRASTRUCTURE LAYER 5: STRUCTURED TELEMETRY
+// INFRASTRUCTURE LAYER 3: STRUCTURED TELEMETRY
 // ============================================================================
 // Structured event logging for observability and debugging
 // ============================================================================
@@ -360,6 +249,77 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+fn require_user_from_access_token(access_token: &str, auth: &AuthConfig) -> Result<String, String> {
+    auth_service::verify_access_token(access_token, &auth.jwt_secret)
+}
+
+#[tauri::command]
+fn signup(
+    memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    email: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let result = auth_service::signup(&conn, &email, &password, &auth_config.jwt_secret)?;
+
+    Ok(serde_json::json!({
+        "user": result.user,
+        "tokens": result.tokens
+    }))
+}
+
+#[tauri::command]
+fn login(
+    memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    email: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let result = auth_service::login(&conn, &email, &password, &auth_config.jwt_secret)?;
+
+    Ok(serde_json::json!({
+        "user": result.user,
+        "tokens": result.tokens
+    }))
+}
+
+#[tauri::command]
+fn refresh_token(
+    memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    refresh_token: String,
+) -> Result<serde_json::Value, String> {
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let tokens = auth_service::refresh(&conn, &refresh_token, &auth_config.jwt_secret)?;
+
+    Ok(serde_json::json!({ "tokens": tokens }))
+}
+
+#[tauri::command]
+fn logout(
+    memory_store: tauri::State<MemoryStore>,
+    refresh_token: String,
+) -> Result<String, String> {
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    auth_service::logout(&conn, &refresh_token)?;
+    Ok("Logged out".to_string())
+}
+
+#[tauri::command]
+fn get_current_user(
+    memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+) -> Result<serde_json::Value, String> {
+    let user_id = require_user_from_access_token(&access_token, &auth_config)?;
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    auth_service::claim_orphaned_data_for_user(&conn, &user_id)?;
+    let user = auth_service::get_user_by_id(&conn, &user_id)?;
+    Ok(serde_json::json!({ "user": user }))
+}
+
 struct InstalledApp {
     name: String,
     display_name: String,
@@ -375,6 +335,10 @@ struct AppRegistry {
 
 struct MemoryStore {
     conn: Mutex<Connection>,
+}
+
+struct AuthConfig {
+    jwt_secret: String,
 }
 
 #[derive(Deserialize)]
@@ -1159,33 +1123,22 @@ fn normalize_app_name(name: &str) -> String {
         .collect()
 }
 
-fn log_action(action: &str, value: &str, success: bool) {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    println!(
-        "[{}] action={} value={} success={}",
-        timestamp, action, value, success
-    );
-}
-
 // Memory operations
-fn save_memory(memory_store: &MemoryStore, content: &str) -> Result<(), String> {
+fn save_memory(memory_store: &MemoryStore, user_id: &str, content: &str) -> Result<(), String> {
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
     // Use memory_store service to create memory
     let content_string = content.to_string();
-    memory_store::create_memory(&conn, content_string, None)?;
+    memory_store::create_memory(&conn, user_id, content_string, None)?;
     
     Ok(())
 }
 
-fn search_memories(memory_store: &MemoryStore, keyword: &str) -> Result<Vec<String>, String> {
+fn search_memories(memory_store: &MemoryStore, user_id: &str, keyword: &str) -> Result<Vec<String>, String> {
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
     // Use memory_store service to search
-    let search_results = memory_store::search_memories(&conn, keyword.to_string(), 10)?;
+    let search_results = memory_store::search_memories(&conn, user_id, keyword.to_string(), 10)?;
     
     // Extract content from Memory structs
     let memories = search_results.iter().map(|m| m.content.clone()).collect();
@@ -1193,7 +1146,7 @@ fn search_memories(memory_store: &MemoryStore, keyword: &str) -> Result<Vec<Stri
     Ok(memories)
 }
 
-fn set_reminder(memory_store: &MemoryStore, json_value: &str) -> Result<(), String> {
+fn set_reminder(memory_store: &MemoryStore, user_id: &str, json_value: &str) -> Result<(), String> {
     // Parse JSON
     let parsed: serde_json::Value = serde_json::from_str(json_value)
         .map_err(|e| format!("Invalid JSON: {}", e))?;
@@ -1212,7 +1165,7 @@ fn set_reminder(memory_store: &MemoryStore, json_value: &str) -> Result<(), Stri
     println!("📝 Storing reminder: '{}' at timestamp {}", content, trigger_at);
     
     // Use reminder_store service to create reminder
-    let reminder_id = reminder_store::create_reminder(&conn, content.clone(), trigger_at, None)?;
+    let reminder_id = reminder_store::create_reminder(&conn, user_id, content.clone(), trigger_at, None)?;
     
     println!("✓ Reminder stored successfully with ID: {}", reminder_id);
     
@@ -1223,20 +1176,26 @@ fn check_expired_reminders(memory_store: &MemoryStore, event_bus: &EventBus, app
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
     // Use reminder_store service to get due reminders
-    let due_reminders = reminder_store::get_due_reminders(&conn, 0)?;
+    let due_reminders = reminder_store::get_due_reminders_global(&conn, 0)?;
     
     // Process each due reminder
     for reminder in due_reminders {
         println!("🔔 REMINDER: {}", reminder.content);
         
         // Update reminder status to triggered
-        let _ = reminder_store::update_reminder_status(&conn, &reminder.id, reminder_store::status::TRIGGERED);
+        let _ = reminder_store::update_reminder_status(
+            &conn,
+            &reminder.user_id,
+            &reminder.id,
+            reminder_store::status::TRIGGERED,
+        );
         
         // Emit reminder event to frontend. Frontend shows clickable desktop notification.
         if let Some(app) = app_handle {
             let _ = app.emit("reminder_fired", serde_json::json!({
                 "id": reminder.id,
-                "content": reminder.content
+                "content": reminder.content,
+                "user_id": reminder.user_id
             }));
             println!("✓ Reminder event emitted to frontend");
         }
@@ -1249,28 +1208,41 @@ fn check_expired_reminders(memory_store: &MemoryStore, event_bus: &EventBus, app
 }
 
 #[tauri::command]
-fn finish_reminder(memory_store: tauri::State<MemoryStore>, reminder_id: String) -> Result<String, String> {
+fn finish_reminder(
+    memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+    reminder_id: String,
+) -> Result<String, String> {
+    let user_id = require_user_from_access_token(&access_token, &auth_config)?;
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
     // Delete reminder using service layer
-    reminder_store::delete_reminder(&conn, &reminder_id)?;
+    reminder_store::delete_reminder(&conn, &user_id, &reminder_id)?;
     Ok("Reminder finished".to_string())
 }
 
 #[tauri::command]
-fn snooze_reminder(memory_store: tauri::State<MemoryStore>, reminder_id: String, snooze_minutes: i64) -> Result<String, String> {
+fn snooze_reminder(
+    memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+    reminder_id: String,
+    snooze_minutes: i64,
+) -> Result<String, String> {
+    let user_id = require_user_from_access_token(&access_token, &auth_config)?;
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
     // Snooze reminder using service layer
-    reminder_store::snooze_reminder(&conn, &reminder_id, snooze_minutes)?;
+    reminder_store::snooze_reminder(&conn, &user_id, &reminder_id, snooze_minutes)?;
     Ok(format!("Reminder snoozed for {} minutes", snooze_minutes.max(1)))
 }
 
-fn recall_memories(memory_store: &MemoryStore) -> Result<Vec<String>, String> {
+fn recall_memories(memory_store: &MemoryStore, user_id: &str) -> Result<Vec<String>, String> {
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
     // Use memory_store service to retrieve memories
-    let retrieved_memories = memory_store::get_memories(&conn, 10, 0)?;
+    let retrieved_memories = memory_store::get_memories(&conn, user_id, 10, 0)?;
     
     // Extract content from Memory structs
     let memories = retrieved_memories.iter().map(|m| m.content.clone()).collect();
@@ -1283,14 +1255,16 @@ fn recall_memories(memory_store: &MemoryStore) -> Result<Vec<String>, String> {
 #[tauri::command]
 fn execute_action(
     intent_json: String,
+    access_token: String,
     app_handle: tauri::AppHandle,
     registry: tauri::State<AppRegistry>,
     memory_store: tauri::State<MemoryStore>,
     event_bus: tauri::State<EventBus>,
     permissions: tauri::State<PermissionManager>,
+    auth_config: tauri::State<AuthConfig>,
 ) -> Result<ActionResponse, String> {
     let start_time = std::time::Instant::now();
-    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let user_id = require_user_from_access_token(&access_token, &auth_config)?;
     
     // Deserialize JSON string into typed Intent enum
     let intent: Intent = serde_json::from_str(&intent_json)
@@ -1556,7 +1530,7 @@ fn execute_action(
                 });
             }
             
-            match save_memory(&memory_store, &content) {
+            match save_memory(&memory_store, &user_id, &content) {
                 Ok(()) => {
                     let duration_ms = start_time.elapsed().as_millis();
                     event_bus.emit(&Event::MemorySaved(content));
@@ -1601,7 +1575,7 @@ fn execute_action(
                 });
             }
             
-            match recall_memories(&memory_store) {
+            match recall_memories(&memory_store, &user_id) {
                 Ok(memories) => {
                     let duration_ms = start_time.elapsed().as_millis();
                     event_bus.emit(&Event::IntentExecuted {
@@ -1645,7 +1619,7 @@ fn execute_action(
                 });
             }
             
-            match search_memories(&memory_store, &keyword) {
+            match search_memories(&memory_store, &user_id, &keyword) {
                 Ok(memories) => {
                     let duration_ms = start_time.elapsed().as_millis();
                     event_bus.emit(&Event::IntentExecuted {
@@ -1694,7 +1668,7 @@ fn execute_action(
                 "trigger_at": trigger_at
             }).to_string();
             
-            match set_reminder(&memory_store, &reminder_json) {
+            match set_reminder(&memory_store, &user_id, &reminder_json) {
                 Ok(()) => {
                     let duration_ms = start_time.elapsed().as_millis();
                     event_bus.emit(&Event::ReminderScheduled(content));
@@ -1747,15 +1721,19 @@ fn execute_action(
         Some(response.message.clone())
     };
     
-    // Log command to command_history table
-    let _ = history_store::log_command(
-        &conn,
-        intent_json.clone(),
-        intent_name.to_string(),
-        duration_ms,
-        response.success,
-        error_msg,
-    );
+    // Log command to command_history table.
+    // Lock the DB only for this insert to avoid self-deadlock with nested store calls.
+    if let Ok(conn) = memory_store.conn.lock() {
+        let _ = history_store::log_command(
+            &conn,
+            &user_id,
+            intent_json.clone(),
+            intent_name.to_string(),
+            duration_ms,
+            response.success,
+            error_msg,
+        );
+    }
     
     // Log the dispatched intent for debugging
     log_intent_dispatch(&intent_json, response.success);
@@ -1767,12 +1745,18 @@ fn execute_action(
 // ============================================================================
 
 #[tauri::command]
-fn get_memories(memory_store: tauri::State<MemoryStore>, limit: Option<i64>) -> Result<Vec<serde_json::Value>, String> {
+fn get_memories(
+    memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+    limit: Option<i64>,
+) -> Result<Vec<serde_json::Value>, String> {
     let limit = limit.unwrap_or(10) as i32;
+    let user_id = require_user_from_access_token(&access_token, &auth_config)?;
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
     // Use memory_store service to retrieve memories
-    let memories_list = memory_store::get_memories(&conn, limit, 0)?;
+    let memories_list = memory_store::get_memories(&conn, &user_id, limit, 0)?;
     
     // Convert Memory structs to JSON response
     let json_memories = memories_list
@@ -1792,12 +1776,18 @@ fn get_memories(memory_store: tauri::State<MemoryStore>, limit: Option<i64>) -> 
 }
 
 #[tauri::command]
-fn get_reminders(memory_store: tauri::State<MemoryStore>, limit: Option<i64>) -> Result<Vec<serde_json::Value>, String> {
+fn get_reminders(
+    memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+    limit: Option<i64>,
+) -> Result<Vec<serde_json::Value>, String> {
     let _limit = limit.unwrap_or(10);
+    let user_id = require_user_from_access_token(&access_token, &auth_config)?;
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
     // Use reminder_store service to retrieve pending reminders
-    let reminders_list = reminder_store::get_pending_reminders(&conn)?;
+    let reminders_list = reminder_store::get_pending_reminders(&conn, &user_id)?;
     
     // Convert Reminder structs to JSON response
     let json_reminders = reminders_list
@@ -1819,11 +1809,32 @@ fn get_reminders(memory_store: tauri::State<MemoryStore>, limit: Option<i64>) ->
 }
 
 #[tauri::command]
-fn get_command_history(limit: Option<i64>) -> Result<Vec<serde_json::Value>, String> {
-    // TODO: Implement command history tracking in execute_action
-    // For now, return empty array
-    let _limit = limit.unwrap_or(10);
-    Ok(Vec::new())
+fn get_command_history(
+    memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+    limit: Option<i64>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let limit = limit.unwrap_or(10) as i32;
+    let user_id = require_user_from_access_token(&access_token, &auth_config)?;
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let records = history_store::get_command_history(&conn, &user_id, limit, 0)?;
+
+    Ok(records
+        .iter()
+        .map(|record| {
+            serde_json::json!({
+                "id": record.id,
+                "command": record.command_text,
+                "intent": record.intent_name,
+                "timestamp": format_timestamp(record.timestamp),
+                "success": record.success,
+                "duration": record.duration_ms,
+                "status": record.status,
+                "error_message": record.error_message
+            })
+        })
+        .collect())
 }
 
 // Debug command to manually trigger reminder check
@@ -1831,8 +1842,11 @@ fn get_command_history(limit: Option<i64>) -> Result<Vec<serde_json::Value>, Str
 fn check_reminders_now(
     memory_store: tauri::State<MemoryStore>,
     event_bus: tauri::State<EventBus>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
     app: tauri::AppHandle
 ) -> Result<String, String> {
+    let _ = require_user_from_access_token(&access_token, &auth_config)?;
     println!("🔍 Manual reminder check triggered");
     check_expired_reminders(&memory_store, &event_bus, Some(&app))?;
     Ok("Reminder check completed".to_string())
@@ -1840,11 +1854,16 @@ fn check_reminders_now(
 
 // Graph command to rebuild memory relationship graph
 #[tauri::command]
-fn rebuild_memory_graph(memory_store: tauri::State<MemoryStore>) -> Result<serde_json::Value, String> {
+fn rebuild_memory_graph(
+    memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+) -> Result<serde_json::Value, String> {
+    let user_id = require_user_from_access_token(&access_token, &auth_config)?;
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
     println!("🔗 Rebuilding memory relationship graph...");
-    let (cleared_edges, created_edges) = memory_graph::rebuild_memory_graph(&conn)?;
+    let (cleared_edges, created_edges) = memory_graph::rebuild_memory_graph(&conn, &user_id)?;
     
     println!("✓ Graph rebuild complete: cleared {} existing edges, created {} new edges", 
              cleared_edges, created_edges);
@@ -1860,13 +1879,16 @@ fn rebuild_memory_graph(memory_store: tauri::State<MemoryStore>) -> Result<serde
 #[tauri::command]
 fn get_related_memories(
     memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
     memory_id: String,
     min_weight: Option<f64>
 ) -> Result<Vec<serde_json::Value>, String> {
+    let user_id = require_user_from_access_token(&access_token, &auth_config)?;
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     let min_weight = min_weight.unwrap_or(0.0);
     
-    let related = memory_graph::get_related_memories(&conn, memory_id, min_weight)?;
+    let related = memory_graph::get_related_memories(&conn, &user_id, memory_id, min_weight)?;
     
     let json_related: Vec<serde_json::Value> = related
         .iter()
@@ -1884,10 +1906,15 @@ fn get_related_memories(
 
 // Get graph statistics
 #[tauri::command]
-fn get_graph_stats(memory_store: tauri::State<MemoryStore>) -> Result<serde_json::Value, String> {
+fn get_graph_stats(
+    memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+) -> Result<serde_json::Value, String> {
+    let user_id = require_user_from_access_token(&access_token, &auth_config)?;
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
-    let stats = memory_graph::get_graph_stats(&conn)?;
+    let stats = memory_graph::get_graph_stats(&conn, &user_id)?;
     
     Ok(serde_json::json!({
         "total_edges": stats.total_edges,
@@ -1901,12 +1928,15 @@ fn get_graph_stats(memory_store: tauri::State<MemoryStore>) -> Result<serde_json
 #[tauri::command]
 fn get_memory_graph(
     memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
     limit: Option<i64>
 ) -> Result<serde_json::Value, String> {
+    let user_id = require_user_from_access_token(&access_token, &auth_config)?;
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     let limit = (limit.unwrap_or(100) as i32).max(1).min(1000);
     
-    let graph_data = memory_graph::get_memory_graph(&conn, limit)?;
+    let graph_data = memory_graph::get_memory_graph(&conn, &user_id, limit)?;
     
     Ok(serde_json::json!({
         "nodes": graph_data.nodes,
@@ -2078,11 +2108,20 @@ pub fn run() {
             
             println!("✓ Background reminder checker started (checks every 30 seconds)");
             
+            let jwt_secret = std::env::var("NODDY_JWT_SECRET")
+                .unwrap_or_else(|_| "noddy-local-dev-secret-change-me".to_string());
+
             app.manage(memory_store);
+            app.manage(AuthConfig { jwt_secret });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            signup,
+            login,
+            refresh_token,
+            logout,
+            get_current_user,
             execute_action,
             get_memories,
             get_reminders,

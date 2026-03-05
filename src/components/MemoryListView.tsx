@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, Trash2, Calendar, X } from "lucide-react";
+import { useAuth } from "../auth/AuthContext";
 
 type FilterTag = "all" | "work" | "personal" | "ideas" | "reminders";
 
@@ -30,6 +31,7 @@ const FILTER_PILLS: { label: string; value: FilterTag }[] = [
 ];
 
 export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
+  const { getAccessToken } = useAuth();
   const [memories, setMemories] = useState<Memory[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<FilterTag>("all");
@@ -52,7 +54,8 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
   const fetchMemories = async () => {
     setIsLoading(true);
     try {
-      const data = await invoke<any>("get_memories", { limit: 100 });
+      const accessToken = await getAccessToken();
+      const data = await invoke<any>("get_memories", { limit: 100, accessToken });
       if (Array.isArray(data)) {
         const formattedMemories = data.map((m: any) => ({
           id: m.id || Math.random().toString(),
@@ -253,6 +256,20 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
                       <span>{memory.timestamp}</span>
                     </div>
                     <motion.button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleSelectMemory(memory);
+                      }}
+                      whileHover={{ scale: 1.04 }}
+                      whileTap={{ scale: 0.97 }}
+                      className="btn btn-secondary"
+                      style={{ padding: "6px 10px", fontSize: "11px" }}
+                    >
+                      Details
+                    </motion.button>
+                    <motion.button
+                      type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         handleDeleteMemory(memory.id);
@@ -291,7 +308,8 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              zIndex: 1000,
+              zIndex: 5000,
+              pointerEvents: "auto",
             }}
             onClick={() => setDetailPanelOpen(false)}
           >

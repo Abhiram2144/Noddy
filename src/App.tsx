@@ -26,6 +26,9 @@ import {
 import "./App.css";
 import { MemoryListView } from "./components/MemoryListView";
 import { MemoryGraphView } from "./components/MemoryGraphView";
+import { LoginPage } from "./components/LoginPage";
+import { SignupPage } from "./components/SignupPage";
+import { useAuth } from "./auth/AuthContext";
 
 // ============================================================================
 // TYPES
@@ -101,14 +104,14 @@ const navItems: NavItem[] = [
 // DATA FETCHING UTILITIES
 // ============================================================================
 
-async function fetchReminders(): Promise<Reminder[]> {
+async function fetchReminders(accessToken: string): Promise<Reminder[]> {
   try {
-    const data = await invoke<any>("get_reminders");
+    const data = await invoke<any>("get_reminders", { accessToken });
     if (Array.isArray(data)) {
       return data.map((reminder: any) => ({
         id: reminder.id || Math.random().toString(),
         content: reminder.content || reminder.title || "Untitled reminder",
-        expires_at: reminder.expires_at || Math.floor(Date.now() / 1000) + 3600,
+        expires_at: reminder.trigger_at || reminder.expires_at || Math.floor(Date.now() / 1000) + 3600,
         time: reminder.time || reminder.due_date || "No time set",
         source: reminder.source || "Local",
       }));
@@ -120,9 +123,9 @@ async function fetchReminders(): Promise<Reminder[]> {
   }
 }
 
-async function fetchCommandHistory(): Promise<CommandHistory[]> {
+async function fetchCommandHistory(accessToken: string): Promise<CommandHistory[]> {
   try {
-    const data = await invoke<any>("get_command_history", { limit: 3 });
+    const data = await invoke<any>("get_command_history", { limit: 3, accessToken });
     if (Array.isArray(data)) {
       return data.map((cmd: any) => ({
         id: cmd.id || Math.random().toString(),
@@ -140,9 +143,9 @@ async function fetchCommandHistory(): Promise<CommandHistory[]> {
   }
 }
 
-async function fetchMemories(): Promise<Memory[]> {
+async function fetchMemories(accessToken: string): Promise<Memory[]> {
   try {
-    const data = await invoke<any>("get_memories", { limit: 2 });
+    const data = await invoke<any>("get_memories", { limit: 2, accessToken });
     if (Array.isArray(data)) {
       return data.map((memory: any) => ({
         id: memory.id || Math.random().toString(),
@@ -171,6 +174,8 @@ const mockIntegrations: Integration[] = [
 // ============================================================================
 
 function App() {
+  const { user, loading, login, signup, logout, getAccessToken } = useAuth();
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const [currentView, setCurrentView] = useState("dashboard");
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [commandHistory, setCommandHistory] = useState<CommandHistory[]>([]);
@@ -183,15 +188,23 @@ function App() {
   const [activeReminderAction, setActiveReminderAction] = useState<{ id: number; content: string } | null>(null);
   const [isActionProcessing, setIsActionProcessing] = useState(false);
 
+  const invokeAuthed = async <T,>(command: string, payload: Record<string, unknown> = {}): Promise<T> => {
+    const accessToken = await getAccessToken();
+    return invoke<T>(command, { ...payload, accessToken });
+  };
+
   // Fetch dashboard data on component mount
   useEffect(() => {
+    if (!user) return;
+
     const loadDashboardData = async () => {
       setIsLoadingDashboard(true);
       try {
+        const accessToken = await getAccessToken();
         const [remindersData, historyData, memoriesData] = await Promise.all([
-          fetchReminders(),
-          fetchCommandHistory(),
-          fetchMemories(),
+          fetchReminders(accessToken),
+          fetchCommandHistory(accessToken),
+          fetchMemories(accessToken),
         ]);
         
         setReminders(remindersData);
@@ -203,10 +216,12 @@ function App() {
     };
 
     loadDashboardData();
-  }, []);
+  }, [getAccessToken, user]);
 
   // Handle reminder events globally so navigation works from any screen.
   useEffect(() => {
+    if (!user) return;
+
     let unlisten: (() => void) | undefined;
 
     const setup = async () => {
@@ -214,7 +229,11 @@ function App() {
         const reminderId = Number(event?.payload?.id);
         const reminderContent = event?.payload?.content || "You have a reminder.";
 
-        const remindersData = await fetchReminders();
+        const accessToken = await getAccessToken();
+        if (event?.payload?.user_id && event.payload.user_id !== user.id) {
+          return;
+        }
+        const remindersData = await fetchReminders(accessToken);
         setReminders(remindersData);
         setPendingReminderNavigation(true);
 
@@ -252,7 +271,7 @@ function App() {
     return () => {
       if (unlisten) unlisten();
     };
-  }, []);
+  }, [getAccessToken, user?.id]);
 
   // Desktop notification click usually focuses the app window.
   // When focus returns and a reminder fired, route to Reminders view once.
@@ -269,7 +288,8 @@ function App() {
   }, [pendingReminderNavigation]);
 
   const refreshReminderList = async () => {
-    const remindersData = await fetchReminders();
+    const accessToken = await getAccessToken();
+    const remindersData = await fetchReminders(accessToken);
     setReminders(remindersData);
   };
 
@@ -277,7 +297,7 @@ function App() {
     if (!activeReminderAction) return;
     setIsActionProcessing(true);
     try {
-      await invoke("finish_reminder", { reminderId: activeReminderAction.id });
+      await invokeAuthed("finish_reminder", { reminderId: activeReminderAction.id });
       await refreshReminderList();
       setActiveReminderAction(null);
       setPendingReminderNavigation(false);
@@ -292,7 +312,7 @@ function App() {
     if (!activeReminderAction) return;
     setIsActionProcessing(true);
     try {
-      await invoke("snooze_reminder", {
+      await invokeAuthed("snooze_reminder", {
         reminderId: activeReminderAction.id,
         snoozeMinutes,
       });
@@ -305,6 +325,21 @@ function App() {
       setIsActionProcessing(false);
     }
   };
+
+  if (loading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#0d0d0d", color: "#eaeaea" }}>
+        Loading secure workspace...
+      </div>
+    );
+  }
+
+  if (!user) {
+    if (authMode === "login") {
+      return <LoginPage onLogin={login} onSwitchToSignup={() => setAuthMode("signup")} />;
+    }
+    return <SignupPage onSignup={signup} onSwitchToLogin={() => setAuthMode("login")} />;
+  }
 
   return (
     <div className="app-container">
@@ -320,6 +355,15 @@ function App() {
             <div className="sidebar-logo-icon">🎯</div>
             <span>Noddy</span>
           </div>
+          <div style={{ marginTop: "12px", fontSize: "12px", color: "var(--text-secondary)" }}>{user.email}</div>
+          <button
+            type="button"
+            onClick={() => void logout()}
+            className="btn btn-secondary"
+            style={{ marginTop: "12px", width: "100%" }}
+          >
+            Logout
+          </button>
         </div>
 
         <nav className="sidebar-nav">
@@ -348,7 +392,7 @@ function App() {
             <DashboardView key="dashboard" reminders={reminders} history={commandHistory} memories={memories} isLoading={isLoadingDashboard} />
           )}
           {currentView === "reminders" && (
-            <RemindersView key="reminders" reminders={reminders} setReminders={setReminders} />
+            <RemindersView key="reminders" reminders={reminders} setReminders={setReminders} invokeAuthed={invokeAuthed} />
           )}
           {currentView === "history" && (
             <HistoryView key="history" history={commandHistory} />
@@ -363,7 +407,7 @@ function App() {
             <MemoryView key="memory" memories={memories} setMemories={setMemories} searchQuery={searchQuery} setSearchQuery={setSearchQuery} />
           )}
           {currentView === "test" && (
-            <TestCommandsView key="test" testResults={testResults} setTestResults={setTestResults} />
+            <TestCommandsView key="test" testResults={testResults} setTestResults={setTestResults} invokeAuthed={invokeAuthed} />
           )}
           {currentView === "integrations" && (
             <IntegrationsView key="integrations" integrations={integrations} setIntegrations={setIntegrations} />
@@ -590,7 +634,7 @@ function DashboardView({ reminders, history, memories, isLoading }: { reminders:
 // REMINDERS VIEW
 // ============================================================================
 
-function RemindersView({ reminders, setReminders }: { reminders: Reminder[], setReminders: React.Dispatch<React.SetStateAction<Reminder[]>> }) {
+function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: Reminder[], setReminders: React.Dispatch<React.SetStateAction<Reminder[]>>, invokeAuthed: <T>(command: string, payload?: Record<string, unknown>) => Promise<T> }) {
   const [showModal, setShowModal] = useState(false);
   const [reminderContent, setReminderContent] = useState("");
   const [timeAmount, setTimeAmount] = useState("1");
@@ -673,7 +717,7 @@ function RemindersView({ reminders, setReminders }: { reminders: Reminder[], set
         }
       });
 
-      const result = await invoke<{ success: boolean; message: string }>("execute_action", {
+      const result = await invokeAuthed<{ success: boolean; message: string }>("execute_action", {
         intentJson,
       });
 
@@ -685,7 +729,7 @@ function RemindersView({ reminders, setReminders }: { reminders: Reminder[], set
         setTimeUnit("hours");
         
         // Refresh reminders list
-        const updated = await invoke<Reminder[]>("get_reminders", { limit: 10 });
+        const updated = await invokeAuthed<Reminder[]>("get_reminders", { limit: 10 });
         setReminders(updated);
       } else {
         alert(`❌ Failed: ${result.message}`);
@@ -1244,10 +1288,12 @@ function parseTestCommand(input: string): string {
 
 function TestCommandsView({ 
   testResults, 
-  setTestResults 
+  setTestResults,
+  invokeAuthed,
 }: { 
   testResults: TestCommandResult[], 
-  setTestResults: React.Dispatch<React.SetStateAction<TestCommandResult[]>> 
+  setTestResults: React.Dispatch<React.SetStateAction<TestCommandResult[]>>,
+  invokeAuthed: <T>(command: string, payload?: Record<string, unknown>) => Promise<T>,
 }) {
   const [commandInput, setCommandInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -1260,7 +1306,7 @@ function TestCommandsView({
 
     try {
       const intentJson = parseTestCommand(commandInput);
-      const result = await invoke<TestCommandResponse>("execute_action", {
+      const result = await invokeAuthed<TestCommandResponse>("execute_action", {
         intentJson,
       });
 
@@ -1303,7 +1349,7 @@ function TestCommandsView({
 
   const checkRemindersNow = async () => {
     try {
-      const result = await invoke<string>("check_reminders_now");
+      const result = await invokeAuthed<string>("check_reminders_now");
       console.log("✓ Manual reminder check:", result);
       alert("Reminder check completed! Check console for details.");
     } catch (error) {

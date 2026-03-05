@@ -15,6 +15,10 @@ pub fn initialize_database(conn: &Connection) -> SqliteResult<()> {
     create_reminders_table(conn)?;
     create_command_history_table(conn)?;
     create_memory_embeddings_table(conn)?;
+    create_users_table(conn)?;
+    create_sessions_table(conn)?;
+    create_integrations_table(conn)?;
+    migrate_user_ownership_columns(conn)?;
     
     // Create all indexes
     create_indexes(conn)?;
@@ -28,6 +32,7 @@ fn create_memories_table(conn: &Connection) -> SqliteResult<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS memories (
             id TEXT PRIMARY KEY,
+            user_id TEXT,
             content TEXT NOT NULL,
             created_at INTEGER,
             updated_at INTEGER,
@@ -85,6 +90,7 @@ fn create_memory_edges_table(conn: &Connection) -> SqliteResult<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS memory_edges (
             id TEXT PRIMARY KEY,
+            user_id TEXT,
             source_memory_id TEXT NOT NULL,
             target_memory_id TEXT NOT NULL,
             relationship TEXT,
@@ -106,6 +112,7 @@ fn create_reminders_table(conn: &Connection) -> SqliteResult<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS reminders (
             id TEXT PRIMARY KEY,
+            user_id TEXT,
             content TEXT NOT NULL,
             created_at INTEGER,
             trigger_at INTEGER NOT NULL,
@@ -127,6 +134,7 @@ fn create_command_history_table(conn: &Connection) -> SqliteResult<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS command_history (
             id TEXT PRIMARY KEY,
+            user_id TEXT,
             command_text TEXT NOT NULL,
             intent_name TEXT,
             duration_ms INTEGER,
@@ -161,6 +169,81 @@ fn create_memory_embeddings_table(conn: &Connection) -> SqliteResult<()> {
     Ok(())
 }
 
+fn create_users_table(conn: &Connection) -> SqliteResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )",
+        [],
+    )?;
+
+    println!("✓ users table ready");
+    Ok(())
+}
+
+fn create_sessions_table(conn: &Connection) -> SqliteResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            refresh_token TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    println!("✓ sessions table ready");
+    Ok(())
+}
+
+fn create_integrations_table(conn: &Connection) -> SqliteResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS integrations (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            access_token TEXT,
+            refresh_token TEXT,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    println!("✓ integrations table ready");
+    Ok(())
+}
+
+fn migrate_user_ownership_columns(conn: &Connection) -> SqliteResult<()> {
+    ensure_column(conn, "memories", "user_id", "TEXT")?;
+    ensure_column(conn, "memory_edges", "user_id", "TEXT")?;
+    ensure_column(conn, "reminders", "user_id", "TEXT")?;
+    ensure_column(conn, "command_history", "user_id", "TEXT")?;
+
+    Ok(())
+}
+
+fn ensure_column(conn: &Connection, table: &str, column: &str, column_type: &str) -> SqliteResult<()> {
+    let mut stmt = conn.prepare(&format!("SELECT name FROM pragma_table_info('{}')", table))?;
+    let existing_cols: Vec<String> = stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<Vec<String>, _>>()?;
+
+    if !existing_cols.iter().any(|c| c == column) {
+        conn.execute(
+            &format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, column_type),
+            [],
+        )?;
+    }
+
+    Ok(())
+}
+
 /// Create all indexes for optimal query performance
 fn create_indexes(conn: &Connection) -> SqliteResult<()> {
     // Memories table indexes
@@ -181,6 +264,11 @@ fn create_indexes(conn: &Connection) -> SqliteResult<()> {
     
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memories_source ON memories(source)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memories_user_id ON memories(user_id)",
         [],
     )?;
     
@@ -221,6 +309,11 @@ fn create_indexes(conn: &Connection) -> SqliteResult<()> {
         "CREATE INDEX IF NOT EXISTS idx_memory_edges_created_at ON memory_edges(created_at DESC)",
         [],
     )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_edges_user_id ON memory_edges(user_id)",
+        [],
+    )?;
     
     // Reminders indexes
     conn.execute(
@@ -237,6 +330,11 @@ fn create_indexes(conn: &Connection) -> SqliteResult<()> {
         "CREATE INDEX IF NOT EXISTS idx_reminders_memory_id ON reminders(memory_id)",
         [],
     )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reminders_user_id ON reminders(user_id)",
+        [],
+    )?;
     
     // Command history indexes
     conn.execute(
@@ -251,6 +349,26 @@ fn create_indexes(conn: &Connection) -> SqliteResult<()> {
     
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_command_history_status ON command_history(status)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_command_history_user_id ON command_history(user_id)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_refresh_token ON sessions(refresh_token)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_integrations_user_id ON integrations(user_id)",
         [],
     )?;
     
@@ -330,6 +448,9 @@ pub fn verify_database(conn: &Connection) -> SqliteResult<()> {
         "reminders",
         "command_history",
         "memory_embeddings",
+        "users",
+        "sessions",
+        "integrations",
     ];
     
     for table in expected_tables {

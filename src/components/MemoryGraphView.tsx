@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, RotateCcw, ZoomIn, ZoomOut, X } from "lucide-react";
 import ForceGraph3D from "react-force-graph-3d";
+import { useAuth } from "../auth/AuthContext";
 
 interface GraphNode {
   id: string;
@@ -37,6 +38,7 @@ const TAG_COLORS: Record<string, string> = {
 const ANIMATION_NORMAL = 300;
 
 export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
+  const { getAccessToken } = useAuth();
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], edges: [] });
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -45,28 +47,45 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
   const [detailPanelOpen, setDetailPanelOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const graphRef = useRef<any>(null);
+  const graphContainerRef = useRef<HTMLDivElement | null>(null);
+  const [graphSize, setGraphSize] = useState({ width: 900, height: 560 });
 
   useEffect(() => {
     fetchGraphData();
   }, []);
 
-  // Handle zoom with mouse wheel
+  // Keep graph canvas bounded to panel size instead of full window.
   useEffect(() => {
-    const handleWheel = (e: WheelEvent) => {
-      if (graphRef.current) {
-        const direction = e.deltaY > 0 ? -0.1 : 0.1;
-        setZoom((z) => Math.max(0.2, Math.min(3, z + direction)));
-      }
+    const element = graphContainerRef.current;
+    if (!element) return;
+
+    const updateSize = () => {
+      const rect = element.getBoundingClientRect();
+      setGraphSize({
+        width: Math.max(320, Math.floor(rect.width)),
+        height: Math.max(360, Math.floor(rect.height)),
+      });
     };
 
-    window.addEventListener("wheel", handleWheel, { passive: true });
-    return () => window.removeEventListener("wheel", handleWheel);
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(element);
+    return () => observer.disconnect();
   }, []);
+
+  const zoomCamera = (factor: number) => {
+    if (!graphRef.current) return;
+    const current = graphRef.current.cameraPosition();
+    const nextZ = Math.max(70, Math.min(3500, current.z * factor));
+    graphRef.current.cameraPosition({ x: current.x, y: current.y, z: nextZ }, undefined, 300);
+    setZoom((z) => Math.max(0.2, Math.min(3, factor < 1 ? z + 0.15 : z - 0.15)));
+  };
 
   const fetchGraphData = async () => {
     setIsLoading(true);
     try {
-      const data = await invoke<any>("get_memory_graph", { limit: 200 });
+      const accessToken = await getAccessToken();
+      const data = await invoke<any>("get_memory_graph", { limit: 200, accessToken });
       if (data && data.nodes && data.edges) {
         setGraphData({
           nodes: data.nodes || [],
@@ -164,7 +183,7 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
         </motion.button>
 
         <motion.button
-          onClick={() => setZoom((z) => Math.min(z + 0.2, 3))}
+          onClick={() => zoomCamera(0.85)}
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
           className="btn btn-secondary"
@@ -175,7 +194,7 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
         </motion.button>
 
         <motion.button
-          onClick={() => setZoom((z) => Math.max(z - 0.2, 0.2))}
+          onClick={() => zoomCamera(1.15)}
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
           className="btn btn-secondary"
@@ -188,10 +207,23 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
 
       {/* Graph Container */}
       <motion.div
+        ref={graphContainerRef}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: ANIMATION_NORMAL / 1000, delay: 100 / 1000 }}
-        style={{ flex: 1, position: "relative", background: "var(--bg-secondary)", overflow: "hidden" }}
+        onWheel={(e) => {
+          e.preventDefault();
+          zoomCamera(e.deltaY > 0 ? 1.12 : 0.88);
+        }}
+        style={{
+          flex: 1,
+          position: "relative",
+          background: "var(--bg-secondary)",
+          overflow: "hidden",
+          height: "min(68vh, 760px)",
+          borderRadius: "16px",
+          border: "1px solid var(--border-subtle)",
+        }}
       >
         {isLoading ? (
           <motion.div
@@ -225,8 +257,8 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
             onNodeClick={handleNodeClick}
             onNodeHover={(node: any) => setHoveredNodeId(node ? node.id : null)}
             backgroundColor="var(--bg-secondary)"
-            width={typeof window !== "undefined" ? window.innerWidth : 800}
-            height={typeof window !== "undefined" ? window.innerHeight : 600}
+            width={graphSize.width}
+            height={graphSize.height}
             d3VelocityDecay={0.3}
             numDimensions={3}
             nodeVisibility={(n: any) => filteredNodes.some((fn) => fn.id === n.id)}
@@ -255,6 +287,12 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
           >
             Zoom: {(zoom * 100).toFixed(0)}%
           </motion.div>
+        )}
+
+        {!isLoading && filteredNodes.length > 0 && (
+          <div style={{ position: "absolute", top: "24px", right: "32px", fontSize: "12px", color: "var(--text-secondary)" }}>
+            Click a node to open details
+          </div>
         )}
 
         {/* Legend */}
@@ -327,7 +365,8 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              zIndex: 1000,
+              zIndex: 5000,
+              pointerEvents: "auto",
             }}
             onClick={() => setDetailPanelOpen(false)}
           >
