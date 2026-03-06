@@ -37,6 +37,8 @@ fn create_memories_table(conn: &Connection) -> SqliteResult<()> {
             created_at INTEGER,
             updated_at INTEGER,
             importance REAL DEFAULT 0.5,
+            access_count INTEGER DEFAULT 0,
+            last_accessed_at INTEGER,
             source TEXT,
             tags TEXT,
             metadata TEXT
@@ -221,6 +223,8 @@ fn create_integrations_table(conn: &Connection) -> SqliteResult<()> {
 
 fn migrate_user_ownership_columns(conn: &Connection) -> SqliteResult<()> {
     ensure_column(conn, "memories", "user_id", "TEXT")?;
+    ensure_column(conn, "memories", "access_count", "INTEGER DEFAULT 0")?;
+    ensure_column(conn, "memories", "last_accessed_at", "INTEGER")?;
     ensure_column(conn, "memory_edges", "user_id", "TEXT")?;
     ensure_column(conn, "reminders", "user_id", "TEXT")?;
     ensure_column(conn, "command_history", "user_id", "TEXT")?;
@@ -269,6 +273,11 @@ fn create_indexes(conn: &Connection) -> SqliteResult<()> {
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memories_user_id ON memories(user_id)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memories_last_accessed ON memories(last_accessed_at DESC)",
         [],
     )?;
     
@@ -412,6 +421,17 @@ fn migrate_old_memories_table(conn: &Connection) -> SqliteResult<()> {
                 "ALTER TABLE memories ADD COLUMN importance REAL DEFAULT 0.5",
                 [],
             )?;
+        }
+
+        if !column_names.contains(&"access_count") {
+            conn.execute(
+                "ALTER TABLE memories ADD COLUMN access_count INTEGER DEFAULT 0",
+                [],
+            )?;
+        }
+
+        if !column_names.contains(&"last_accessed_at") {
+            conn.execute("ALTER TABLE memories ADD COLUMN last_accessed_at INTEGER", [])?;
         }
 
         if !column_names.contains(&"source") {

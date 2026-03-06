@@ -115,6 +115,16 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
     setSelectedMemory(memory);
     setDetailPanelOpen(true);
     onSelectMemory?.(memory);
+
+    void (async () => {
+      try {
+        const accessToken = await getAccessToken();
+        await invoke("track_memory_access", { memoryId: memory.id, accessToken });
+        await fetchMemories();
+      } catch (error) {
+        console.error("Failed to track memory access:", error);
+      }
+    })();
   };
 
   const handleDeleteMemory = async (id: string) => {

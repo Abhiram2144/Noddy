@@ -14,7 +14,8 @@ mod database;
 mod memory_store;
 mod reminder_store;
 mod history_store;
-mod memory_graph;
+mod memory_graph_repository;
+mod memory_intelligence_service;
 mod auth_service;
 
 // Command History architecture (repository + service layers)
@@ -1133,7 +1134,9 @@ fn save_memory(memory_store: &MemoryStore, user_id: &str, content: &str) -> Resu
     
     // Use memory_store service to create memory
     let content_string = content.to_string();
-    memory_store::create_memory(&conn, user_id, content_string, None)?;
+    let memory_id = memory_store::create_memory(&conn, user_id, content_string, None)?;
+    memory_intelligence_service::link_related_memories(&conn, user_id, &memory_id)?;
+    memory_intelligence_service::calculate_memory_importance(&conn, user_id, &memory_id)?;
     
     Ok(())
 }
@@ -1878,7 +1881,7 @@ fn rebuild_memory_graph(
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
     println!("🔗 Rebuilding memory relationship graph...");
-    let (cleared_edges, created_edges) = memory_graph::rebuild_memory_graph(&conn, &user_id)?;
+        let (cleared_edges, created_edges) = memory_intelligence_service::rebuild_memory_links(&conn, &user_id)?;
     
     println!("✓ Graph rebuild complete: cleared {} existing edges, created {} new edges", 
              cleared_edges, created_edges);
@@ -1903,15 +1906,15 @@ fn get_related_memories(
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     let min_weight = min_weight.unwrap_or(0.0);
     
-    let related = memory_graph::get_related_memories(&conn, &user_id, memory_id, min_weight)?;
+    let related = memory_intelligence_service::get_related_memories(&conn, &user_id, &memory_id, min_weight)?;
     
     let json_related: Vec<serde_json::Value> = related
         .iter()
-        .map(|(memory_id, weight)| {
+        .map(|entry| {
             serde_json::json!({
-                "memory_id": memory_id,
-                "weight": weight,
-                "relationship": "shared_tag"
+                "memory_id": entry.memory_id,
+                "weight": entry.weight,
+                "relationship": entry.relationship
             })
         })
         .collect();
@@ -1929,13 +1932,52 @@ fn get_graph_stats(
     let user_id = require_user_from_access_token(&access_token, &auth_config)?;
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
-    let stats = memory_graph::get_graph_stats(&conn, &user_id)?;
+    let stats = memory_intelligence_service::get_graph_stats(&conn, &user_id)?;
     
     Ok(serde_json::json!({
         "total_edges": stats.total_edges,
-        "shared_tag_edges": stats.shared_tag_edges,
+        "shared_tag_edges": stats.keyword_edges,
+        "keyword_edges": stats.keyword_edges,
         "average_weight": stats.average_weight,
-        "memories_with_edges": stats.memories_with_edges
+        "memories_with_edges": stats.memories_with_edges,
+        "clusters": stats.clusters
+    }))
+}
+
+#[tauri::command]
+fn track_memory_access(
+    memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+    memory_id: String,
+) -> Result<serde_json::Value, String> {
+    let user_id = require_user_from_access_token(&access_token, &auth_config)?;
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let updated_importance = memory_intelligence_service::record_access_and_refresh(&conn, &user_id, &memory_id)?;
+
+    Ok(serde_json::json!({
+        "memory_id": memory_id,
+        "importance": updated_importance,
+        "status": "tracked"
+    }))
+}
+
+#[tauri::command]
+fn get_graph_data(
+    memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+    limit: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let user_id = require_user_from_access_token(&access_token, &auth_config)?;
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let limit = (limit.unwrap_or(100) as i32).max(1).min(1000);
+
+    let graph_data = memory_intelligence_service::get_graph_data(&conn, &user_id, limit)?;
+
+    Ok(serde_json::json!({
+        "nodes": graph_data.nodes,
+        "edges": graph_data.edges
     }))
 }
 
@@ -1951,7 +1993,7 @@ fn get_memory_graph(
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     let limit = (limit.unwrap_or(100) as i32).max(1).min(1000);
     
-    let graph_data = memory_graph::get_memory_graph(&conn, &user_id, limit)?;
+    let graph_data = memory_intelligence_service::get_graph_data(&conn, &user_id, limit)?;
     
     Ok(serde_json::json!({
         "nodes": graph_data.nodes,
@@ -2168,6 +2210,8 @@ pub fn run() {
             rebuild_memory_graph,
             get_related_memories,
             get_graph_stats,
+            track_memory_access,
+            get_graph_data,
             get_memory_graph
         ])
         .run(tauri::generate_context!())

@@ -9,8 +9,12 @@ import { useAuth } from "../auth/AuthContext";
 interface GraphNode {
   id: string;
   label: string;
+  content: string;
   importance: number;
-  tag?: string;
+  cluster_id: string;
+  connection_count: number;
+  access_count: number;
+  recentness: number;
   x?: number;
   y?: number;
   z?: number;
@@ -20,6 +24,7 @@ interface GraphEdge {
   source: string | GraphNode;
   target: string | GraphNode;
   weight: number;
+  relationship: string;
 }
 
 interface GraphData {
@@ -31,13 +36,16 @@ interface MemoryGraphViewProps {
   onSelectMemory?: (memoryId: string) => void;
 }
 
-const TAG_COLORS: Record<string, string> = {
-  work: "#3b82f6",
-  personal: "#22c55e",
-  idea: "#a855f7",
-  reminder: "#f59e0b",
-  default: "#6c5ce7",
-};
+const CLUSTER_COLORS = [
+  "#38bdf8",
+  "#fb7185",
+  "#f59e0b",
+  "#34d399",
+  "#a78bfa",
+  "#f97316",
+  "#22c55e",
+  "#60a5fa",
+];
 
 const ANIMATION_NORMAL = 300;
 
@@ -103,12 +111,15 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
     setIsLoading(true);
     try {
       const accessToken = await getAccessToken();
-      const data = await invoke<any>("get_memory_graph", { limit: 200, accessToken });
+      const data = await invoke<any>("get_graph_data", { limit: 200, accessToken });
       if (data && data.nodes && data.edges) {
         setGraphData({
           nodes: data.nodes || [],
           edges: data.edges || [],
         });
+        setSelectedNode((current) =>
+          current ? (data.nodes || []).find((node: GraphNode) => node.id === current.id) ?? current : current
+        );
       }
     } catch (error) {
       console.error("Failed to fetch graph data:", error);
@@ -117,10 +128,18 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
     }
   };
 
-  const handleNodeClick = (node: any) => {
+  const handleNodeClick = async (node: GraphNode) => {
     setSelectedNode(node);
     setDetailPanelOpen(true);
     onSelectMemory?.(node.id);
+
+    try {
+      const accessToken = await getAccessToken();
+      await invoke("track_memory_access", { memoryId: node.id, accessToken });
+      await fetchGraphData();
+    } catch (error) {
+      console.error("Failed to track memory access:", error);
+    }
   };
 
   const handleResetCamera = () => {
@@ -131,7 +150,8 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
 
   const filteredNodes = searchQuery.trim()
     ? graphData.nodes.filter((n) =>
-        n.label.toLowerCase().includes(searchQuery.toLowerCase())
+        n.label.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        n.content.toLowerCase().includes(searchQuery.toLowerCase())
       )
     : graphData.nodes;
 
@@ -169,9 +189,19 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
     return () => window.clearTimeout(timer);
   }, [isLoading, filteredNodes.length]);
 
+  const clusterCount = new Set(graphData.nodes.map((node) => node.cluster_id)).size;
+
+  const colorForCluster = (clusterId: string) => {
+    const clusterNumber = Number.parseInt(clusterId.replace("cluster-", ""), 10);
+    if (Number.isNaN(clusterNumber)) {
+      return CLUSTER_COLORS[0];
+    }
+    return CLUSTER_COLORS[(clusterNumber - 1) % CLUSTER_COLORS.length];
+  };
+
   const nodeColor = (node: GraphNode) => {
     if (node.id === selectedNode?.id) return "#ddd6fe";
-    return TAG_COLORS[node.tag || "default"];
+    return colorForCluster(node.cluster_id);
   };
 
   const nodeSize = (node: GraphNode) => {
@@ -190,7 +220,7 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
       {/* Header */}
       <div className="panel-header">
         <h1 className="panel-title">Knowledge Graph</h1>
-        <p className="panel-subtitle">Visualize connections between your memories</p>
+        <p className="panel-subtitle">Visualize clustered relationships and importance across your memories</p>
       </div>
 
       {/* Controls Bar */}
@@ -288,15 +318,18 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
                 source: typeof e.source === "string" ? e.source : e.source.id,
                 target: typeof e.target === "string" ? e.target : e.target.id,
                 value: e.weight,
+                relationship: e.relationship,
               })),
             }}
-            nodeLabel={(n: any) => n.label}
+            nodeLabel={(n: any) => `${n.label}\nImportance: ${Math.round((n.importance || 0) * 100)}%\nCluster: ${n.cluster_id}`}
             nodeColor={nodeColor}
             nodeVal={nodeSize}
             nodeOpacity={1}
             nodeRelSize={9}
             nodeResolution={16}
-            linkColor={() => "#6b7280"}
+            linkColor={(link: any) =>
+              link.relationship === "keyword_similarity" ? "#94a3b8" : "#6b7280"
+            }
             linkOpacity={0.55}
             linkWidth={(link: any) => 1 + (link.value || 0) * 1.8}
             onNodeClick={handleNodeClick}
@@ -355,14 +388,17 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
               minWidth: "180px",
             }}
           >
-            <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "16px", fontWeight: 500 }}>Tag Colors</p>
+            <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "16px", fontWeight: 500 }}>Cluster Colors</p>
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              {Object.entries(TAG_COLORS).map(([tag, color]) => (
-                <div key={tag} style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              {Array.from({ length: Math.min(clusterCount || 1, CLUSTER_COLORS.length) }, (_, index) => {
+                const clusterId = `cluster-${index + 1}`;
+                const color = colorForCluster(clusterId);
+                return (
+                <div key={clusterId} style={{ display: "flex", alignItems: "center", gap: "12px" }}>
                   <div style={{ width: "12px", height: "12px", borderRadius: "50%", backgroundColor: color, boxShadow: `0 0 8px ${color}40` }} />
-                  <span style={{ fontSize: "13px", color: "var(--text-primary)", textTransform: "capitalize" }}>{tag}</span>
+                  <span style={{ fontSize: "13px", color: "var(--text-primary)", textTransform: "capitalize" }}>{clusterId}</span>
                 </div>
-              ))}
+              );})}
             </div>
           </motion.div>
         )}
@@ -385,8 +421,11 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
             <div style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "8px" }}>
               <span style={{ fontSize: "20px", fontWeight: 600, color: "#a78bfa" }}>{filteredNodes.length}</span> nodes
             </div>
-            <div style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
+            <div style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "8px" }}>
               <span style={{ fontSize: "20px", fontWeight: 600, color: "#a78bfa" }}>{filteredEdges.length}</span> connections
+            </div>
+            <div style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
+              <span style={{ fontSize: "20px", fontWeight: 600, color: "#a78bfa" }}>{clusterCount}</span> clusters
             </div>
           </motion.div>
         )}
@@ -445,10 +484,10 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
 
               {/* Content */}
               <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
-                {/* Label */}
+                {/* Memory */}
                 <div>
-                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px", fontWeight: 500 }}>Label</p>
-                  <p style={{ fontSize: "15px", color: "var(--text-primary)", lineHeight: "1.6", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{selectedNode.label}</p>
+                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px", fontWeight: 500 }}>Memory</p>
+                  <p style={{ fontSize: "15px", color: "var(--text-primary)", lineHeight: "1.6" }}>{selectedNode.content}</p>
                 </div>
 
                 {/* ID */}
@@ -477,26 +516,38 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
                   </div>
                 </div>
 
-                {/* Tag */}
-                {selectedNode.tag && (
-                  <div>
-                    <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px", fontWeight: 500 }}>Tag</p>
-                    <span
-                      style={{ 
-                        display: "inline-block",
-                        padding: "8px 16px",
-                        borderRadius: "8px",
-                        color: "white",
-                        fontSize: "14px",
-                        fontWeight: 500,
-                        backgroundColor: TAG_COLORS[selectedNode.tag],
-                        boxShadow: `0 4px 12px ${TAG_COLORS[selectedNode.tag]}40`
-                      }}
-                    >
-                      {selectedNode.tag}
-                    </span>
+                <div>
+                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px", fontWeight: 500 }}>Cluster</p>
+                  <span
+                    style={{
+                      display: "inline-block",
+                      padding: "8px 16px",
+                      borderRadius: "8px",
+                      color: "white",
+                      fontSize: "14px",
+                      fontWeight: 500,
+                      backgroundColor: colorForCluster(selectedNode.cluster_id),
+                      boxShadow: `0 4px 12px ${colorForCluster(selectedNode.cluster_id)}40`
+                    }}
+                  >
+                    {selectedNode.cluster_id}
+                  </span>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "12px" }}>
+                  <div className="card" style={{ padding: "16px" }}>
+                    <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "6px" }}>Connections</p>
+                    <p style={{ fontSize: "20px", color: "var(--text-primary)", fontWeight: 600 }}>{selectedNode.connection_count}</p>
                   </div>
-                )}
+                  <div className="card" style={{ padding: "16px" }}>
+                    <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "6px" }}>Accesses</p>
+                    <p style={{ fontSize: "20px", color: "var(--text-primary)", fontWeight: 600 }}>{selectedNode.access_count}</p>
+                  </div>
+                  <div className="card" style={{ padding: "16px" }}>
+                    <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "6px" }}>Recentness</p>
+                    <p style={{ fontSize: "20px", color: "var(--text-primary)", fontWeight: 600 }}>{Math.round(selectedNode.recentness * 100)}%</p>
+                  </div>
+                </div>
               </div>
             </motion.div>
           </motion.div>

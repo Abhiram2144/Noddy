@@ -22,9 +22,9 @@ pub fn create_memory(
 
     let id = if uses_integer_id {
         conn.execute(
-            "INSERT INTO memories (user_id, content, created_at, updated_at, importance, source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![user_id, content, now, now, 0.5, "user_input"],
+            "INSERT INTO memories (user_id, content, created_at, updated_at, importance, access_count, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![user_id, content, now, now, 0.5, 0, "user_input"],
         )
         .map_err(|e| format!("Failed to create memory: {}", e))?;
 
@@ -32,9 +32,9 @@ pub fn create_memory(
     } else {
         let generated_id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO memories (id, user_id, content, created_at, updated_at, importance, source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![generated_id, user_id, content, now, now, 0.5, "user_input"],
+            "INSERT INTO memories (id, user_id, content, created_at, updated_at, importance, access_count, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![generated_id, user_id, content, now, now, 0.5, 0, "user_input"],
         )
         .map_err(|e| format!("Failed to create memory: {}", e))?;
         generated_id
@@ -58,7 +58,7 @@ pub fn get_memories(
                     COALESCE(source, 'user_input')
              FROM memories
              WHERE user_id = ?1 AND content IS NOT NULL
-             ORDER BY created_at DESC
+               ORDER BY importance DESC, created_at DESC
              LIMIT ?2 OFFSET ?3",
         )
         .map_err(|e| format!("Failed to prepare statement: {}", e))?;
