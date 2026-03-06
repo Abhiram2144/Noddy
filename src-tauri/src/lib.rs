@@ -1208,6 +1208,19 @@ fn check_expired_reminders(memory_store: &MemoryStore, event_bus: &EventBus, app
 }
 
 #[tauri::command]
+fn delete_memory(
+    memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+    memory_id: String,
+) -> Result<String, String> {
+    let user_id = require_user_from_access_token(&access_token, &auth_config)?;
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    memory_store::delete_memory(&conn, &user_id, &memory_id)?;
+    Ok("Memory deleted".to_string())
+}
+
+#[tauri::command]
 fn finish_reminder(
     memory_store: tauri::State<MemoryStore>,
     auth_config: tauri::State<AuthConfig>,
@@ -1950,36 +1963,56 @@ fn get_memory_graph(
 
 /// Helper function to format Unix timestamp to readable string
 fn format_timestamp(timestamp: i64) -> String {
-    use std::time::UNIX_EPOCH;
+    // Format as absolute date and time. e.g. "Mar 5, 2026 3:45 PM"
     
-    // Simple formatting - shows time relative to now
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0) as i64;
+    // Days since epoch (Jan 1, 1970)
+    let days_since_epoch = timestamp / 86400;
+    let seconds_in_day = timestamp % 86400;
     
-    let diff = timestamp - now;
-    if diff < 0 {
-        let abs_diff = (-diff) as u64;
-        // Skip seconds, start from minutes
-        if abs_diff < 3600 {
-            format!("{} minutes ago", abs_diff / 60)
-        } else if abs_diff < 86400 {
-            format!("{} hours ago", abs_diff / 3600)
-        } else {
-            format!("{} days ago", abs_diff / 86400)
+    // Simple year/month/day calculation (approximation for display)
+    let mut year = 1970;
+    let mut days_left = days_since_epoch;
+    
+    loop {
+        let days_in_year = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) { 366 } else { 365 };
+        if days_left < days_in_year {
+            break;
         }
-    } else {
-        let abs_diff = diff as u64;
-        // Skip seconds, start from minutes
-        if abs_diff < 3600 {
-            format!("in {} minutes", abs_diff / 60)
-        } else if abs_diff < 86400 {
-            format!("in {} hours", abs_diff / 3600)
-        } else {
-            format!("in {} days", abs_diff / 86400)
-        }
+        days_left -= days_in_year;
+        year += 1;
     }
+    
+    let months = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1;
+    let mut day_of_month = days_left + 1;
+    let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+    
+    for (i, &days_in_month) in months.iter().enumerate() {
+        let actual_days = if i == 1 && is_leap { 29 } else { days_in_month };
+        if day_of_month <= actual_days as i64 {
+            month = i + 1;
+            break;
+        }
+        day_of_month -= actual_days as i64;
+    }
+    
+    // Time calculation
+    let hours = seconds_in_day / 3600;
+    let minutes = (seconds_in_day % 3600) / 60;
+    
+    // Convert 24-hour to 12-hour format
+    let am_pm = if hours >= 12 { "PM" } else { "AM" };
+    let hour_12 = if hours % 12 == 0 { 12 } else { hours % 12 };
+    
+    let month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let month_name = if month >= 1 && month <= 12 { 
+        month_names[(month - 1) as usize] 
+    } else { 
+        "Jan" 
+    };
+    
+    format!("{} {}, {} {}:{:02} {}", month_name, day_of_month, year, hour_12, minutes, am_pm)
 }
 
 /// Helper function to log intent dispatch (for debugging)
@@ -2131,6 +2164,7 @@ pub fn run() {
             get_reminders,
             get_command_history,
             check_reminders_now,
+            delete_memory,
             finish_reminder,
             snooze_reminder,
             rebuild_memory_graph,

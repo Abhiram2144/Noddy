@@ -118,6 +118,15 @@ pub fn search_memories(
     Ok(memories)
 }
 
+pub fn delete_memory(conn: &Connection, user_id: &str, memory_id: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM memories WHERE id = ?1 AND user_id = ?2",
+        params![memory_id, user_id],
+    )
+    .map_err(|e| format!("Failed to delete memory: {}", e))?;
+    Ok(())
+}
+
 fn current_timestamp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

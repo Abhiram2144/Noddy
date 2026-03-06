@@ -117,7 +117,13 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
     onSelectMemory?.(memory);
   };
 
-  const handleDeleteMemory = (id: string) => {
+  const handleDeleteMemory = async (id: string) => {
+    try {
+      const accessToken = await getAccessToken();
+      await invoke("delete_memory", { memoryId: id, accessToken });
+    } catch (error) {
+      console.error("Failed to delete memory from DB:", error);
+    }
     setMemories((prev) => prev.filter((m) => m.id !== id));
     if (selectedMemory?.id === id) {
       setDetailPanelOpen(false);

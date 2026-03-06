@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { sendNotification } from "@tauri-apps/plugin-notification";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   LayoutDashboard,
@@ -43,7 +44,7 @@ interface NavItem {
 interface Reminder {
   id: string;
   content: string;
-  expires_at: number;
+  trigger_at: number;
   time: string;
   source: "Local" | "Google" | "Outlook";
 }
@@ -111,7 +112,7 @@ async function fetchReminders(accessToken: string): Promise<Reminder[]> {
       return data.map((reminder: any) => ({
         id: reminder.id || Math.random().toString(),
         content: reminder.content || reminder.title || "Untitled reminder",
-        expires_at: reminder.trigger_at || reminder.expires_at || Math.floor(Date.now() / 1000) + 3600,
+        trigger_at: reminder.trigger_at || Math.floor(Date.now() / 1000) + 3600,
         time: reminder.time || reminder.due_date || "No time set",
         source: reminder.source || "Local",
       }));
@@ -241,28 +242,15 @@ function App() {
           setActiveReminderAction({ id: reminderId, content: reminderContent });
         }
 
-        // Show clickable desktop notification from frontend.
-        // This gives us click-through behavior similar to chat apps.
-        if ("Notification" in window) {
-          let permission = Notification.permission;
-          if (permission === "default") {
-            permission = await Notification.requestPermission();
-          }
-
-          if (permission === "granted") {
-            const notif = new Notification("Reminder", {
-              body: reminderContent,
-              tag: `reminder-${reminderId}-${Date.now()}`,
-              requireInteraction: true,
-            });
-
-            notif.onclick = () => {
-              window.focus();
-              setCurrentView("reminders");
-              setPendingReminderNavigation(false);
-              notif.close();
-            };
-          }
+        // Show desktop notification using Tauri's notification API
+        // This uses the system's native notification service
+        try {
+          await sendNotification({
+            title: "Reminder",
+            body: reminderContent,
+          });
+        } catch (notifError) {
+          console.warn("Failed to send notification:", notifError);
         }
       });
     };
@@ -404,7 +392,7 @@ function App() {
             <MemoryGraphView key="memory-graph" />
           )}
           {currentView === "memory" && (
-            <MemoryView key="memory" memories={memories} setMemories={setMemories} searchQuery={searchQuery} setSearchQuery={setSearchQuery} />
+            <MemoryView key="memory" memories={memories} setMemories={setMemories} searchQuery={searchQuery} setSearchQuery={setSearchQuery} invokeAuthed={invokeAuthed} />
           )}
           {currentView === "test" && (
             <TestCommandsView key="test" testResults={testResults} setTestResults={setTestResults} invokeAuthed={invokeAuthed} />
@@ -637,10 +625,20 @@ function DashboardView({ reminders, history, memories, isLoading }: { reminders:
 function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: Reminder[], setReminders: React.Dispatch<React.SetStateAction<Reminder[]>>, invokeAuthed: <T>(command: string, payload?: Record<string, unknown>) => Promise<T> }) {
   const [showModal, setShowModal] = useState(false);
   const [reminderContent, setReminderContent] = useState("");
-  const [timeAmount, setTimeAmount] = useState("1");
-  const [timeUnit, setTimeUnit] = useState("hours");
+  const [reminderDate, setReminderDate] = useState("");
+  const [reminderTime, setReminderTime] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [currentTime, setCurrentTime] = useState(Math.floor(Date.now() / 1000));
+
+  // Initialize date and time with tomorrow at current time
+  useEffect(() => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const dateStr = tomorrow.toISOString().split('T')[0];
+    const timeStr = new Date().toTimeString().slice(0, 5);
+    setReminderDate(dateStr);
+    setReminderTime(timeStr);
+  }, []);
 
   // Update current time every minute for dynamic time display
   useEffect(() => {
@@ -650,6 +648,14 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
 
     return () => clearInterval(interval);
   }, []);
+
+  // Calculate trigger_at timestamp from date and time inputs
+  const calculateTriggerAt = () => {
+    if (!reminderDate || !reminderTime) return null;
+    const dateTimeStr = `${reminderDate}T${reminderTime}:00`;
+    const timestamp = Math.floor(new Date(dateTimeStr).getTime() / 1000);
+    return timestamp;
+  };
 
   // Format relative time without seconds (minutes, hours, days only)
   const formatRelativeTime = (expiresAt: number) => {
@@ -683,7 +689,28 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
     }
   };
 
-  const deleteReminder = (id: string) => {
+  // Format Unix timestamp to absolute date/time (e.g., "Mar 5, 2026 3:45 PM")
+  const formatAbsoluteDateTime = (timestamp: number) => {
+    const date = new Date(timestamp * 1000);
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const month = months[date.getMonth()];
+    const day = date.getDate();
+    const year = date.getFullYear();
+    let hours = date.getHours();
+    const minutes = date.getMinutes();
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12;
+    hours = hours ? hours : 12;
+    const minuteStr = minutes < 10 ? '0' + minutes : minutes;
+    return `${month} ${day}, ${year} ${hours}:${minuteStr} ${ampm}`;
+  };
+
+  const deleteReminder = async (id: string) => {
+    try {
+      await invokeAuthed<string>("finish_reminder", { reminderId: id });
+    } catch (e) {
+      console.warn("Failed to delete reminder from DB:", e);
+    }
     setReminders(reminders.filter(r => r.id !== id));
   };
 
@@ -693,21 +720,19 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
       return;
     }
 
-    const amount = parseInt(timeAmount, 10);
-    if (isNaN(amount) || amount <= 0) {
-      alert("Please enter a valid time amount");
+    if (!reminderDate || !reminderTime) {
+      alert("Please select a date and time");
       return;
     }
 
     setIsCreating(true);
     try {
-      // Calculate trigger_at timestamp
-      let delaySeconds = 0;
-      if (timeUnit === "minutes") delaySeconds = amount * 60;
-      else if (timeUnit === "hours") delaySeconds = amount * 3600;
-      else if (timeUnit === "days") delaySeconds = amount * 86400;
-
-      const trigger_at = Math.floor(Date.now() / 1000) + delaySeconds;
+      const trigger_at = calculateTriggerAt();
+      if (!trigger_at) {
+        alert("Invalid date or time");
+        setIsCreating(false);
+        return;
+      }
 
       const intentJson = JSON.stringify({
         name: "set_reminder",
@@ -722,11 +747,13 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
       });
 
       if (result.success) {
-        alert(`✅ Reminder set! You'll be notified in ${timeAmount} ${timeUnit}.`);
+        // Close modal silently without confirmation message
         setShowModal(false);
         setReminderContent("");
-        setTimeAmount("1");
-        setTimeUnit("hours");
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        setReminderDate(tomorrow.toISOString().split('T')[0]);
+        setReminderTime(new Date().toTimeString().slice(0, 5));
         
         // Refresh reminders list
         const updated = await invokeAuthed<Reminder[]>("get_reminders", { limit: 10 });
@@ -830,26 +857,27 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
                   </label>
                   <div style={{ display: "flex", gap: "12px" }}>
                     <input
-                      type="number"
-                      value={timeAmount}
-                      onChange={(e) => setTimeAmount(e.target.value)}
-                      min="1"
-                      className="search-input"
-                      style={{ width: "100px" }}
-                    />
-                    <select
-                      value={timeUnit}
-                      onChange={(e) => setTimeUnit(e.target.value)}
+                      type="date"
+                      value={reminderDate}
+                      onChange={(e) => setReminderDate(e.target.value)}
                       className="search-input"
                       style={{ flex: 1 }}
-                    >
-                      <option value="minutes">Minutes</option>
-                      <option value="hours">Hours</option>
-                      <option value="days">Days</option>
-                    </select>
+                    />
+                    <input
+                      type="time"
+                      value={reminderTime}
+                      onChange={(e) => setReminderTime(e.target.value)}
+                      className="search-input"
+                      style={{ flex: 1 }}
+                    />
                   </div>
                   <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "8px" }}>
-                    You'll get a desktop notification in {timeAmount} {timeUnit}
+                    {reminderDate && reminderTime
+                      ? (() => {
+                          const trigger_at = calculateTriggerAt();
+                          return trigger_at ? `Reminder set for ${formatAbsoluteDateTime(trigger_at)}` : "Invalid date/time";
+                        })()
+                      : "Select date and time"}
                   </p>
                 </div>
 
@@ -908,7 +936,7 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
                   <div style={{ fontSize: "13px", color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: "12px" }}>
                     <span>
                       <Clock style={{ width: "14px", height: "14px", display: "inline", marginRight: "4px" }} />
-                      {formatRelativeTime(reminder.expires_at)}
+                      {formatRelativeTime(reminder.trigger_at)}
                     </span>
                     <span className="badge badge-success" style={{ fontSize: "11px" }}>{reminder.source}</span>
                   </div>
@@ -988,18 +1016,25 @@ function MemoryView({
   memories, 
   setMemories, 
   searchQuery, 
-  setSearchQuery 
+  setSearchQuery,
+  invokeAuthed
 }: { 
   memories: Memory[], 
   setMemories: React.Dispatch<React.SetStateAction<Memory[]>>, 
   searchQuery: string, 
-  setSearchQuery: React.Dispatch<React.SetStateAction<string>> 
+  setSearchQuery: React.Dispatch<React.SetStateAction<string>>,
+  invokeAuthed: <T>(command: string, payload?: Record<string, unknown>) => Promise<T>
 }) {
   const filteredMemories = memories.filter(m => 
     m.content.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const deleteMemory = (id: string) => {
+  const deleteMemory = async (id: string) => {
+    try {
+      await invokeAuthed<string>("delete_memory", { memoryId: id });
+    } catch (e) {
+      console.warn("Failed to delete memory from DB:", e);
+    }
     setMemories(memories.filter(m => m.id !== id));
   };
 
