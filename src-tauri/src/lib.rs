@@ -16,6 +16,8 @@ mod reminder_store;
 mod history_store;
 mod memory_graph_repository;
 mod memory_intelligence_service;
+mod plugin_interface;
+mod plugin_registry;
 mod scheduler;
 mod worker;
 mod auth_service;
@@ -353,6 +355,84 @@ struct MemoryStore {
 
 struct AuthConfig {
     jwt_secret: String,
+}
+
+#[tauri::command]
+fn get_plugins(
+    memory_store: tauri::State<MemoryStore>,
+    plugin_registry: tauri::State<plugin_registry::PluginRegistry>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+) -> Result<Vec<plugin_registry::PluginRecord>, String> {
+    let _ = require_user_from_access_token(&access_token, &auth_config)?;
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    plugin_registry::get_plugins(&conn, &plugin_registry)
+}
+
+#[tauri::command]
+fn get_active_plugins(
+    memory_store: tauri::State<MemoryStore>,
+    plugin_registry: tauri::State<plugin_registry::PluginRegistry>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+) -> Result<Vec<plugin_registry::PluginRecord>, String> {
+    let _ = require_user_from_access_token(&access_token, &auth_config)?;
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    plugin_registry::get_active_plugins(&conn, &plugin_registry)
+}
+
+#[tauri::command]
+fn enable_plugin(
+    memory_store: tauri::State<MemoryStore>,
+    plugin_registry: tauri::State<plugin_registry::PluginRegistry>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+    plugin_id: String,
+) -> Result<plugin_registry::PluginRecord, String> {
+    let _ = require_user_from_access_token(&access_token, &auth_config)?;
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    plugin_registry::enable_plugin(&conn, &plugin_registry, &plugin_id)
+}
+
+#[tauri::command]
+fn disable_plugin(
+    memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+    plugin_id: String,
+) -> Result<String, String> {
+    let _ = require_user_from_access_token(&access_token, &auth_config)?;
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    plugin_registry::disable_plugin(&conn, &plugin_id)?;
+    Ok("Plugin disabled".to_string())
+}
+
+#[tauri::command]
+fn update_plugin_config(
+    memory_store: tauri::State<MemoryStore>,
+    plugin_registry: tauri::State<plugin_registry::PluginRegistry>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+    plugin_id: String,
+    config_json: String,
+) -> Result<plugin_registry::PluginRecord, String> {
+    let _ = require_user_from_access_token(&access_token, &auth_config)?;
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    plugin_registry::update_plugin_config(&conn, &plugin_registry, &plugin_id, config_json)
+}
+
+#[tauri::command]
+fn execute_plugin_command(
+    memory_store: tauri::State<MemoryStore>,
+    plugin_registry: tauri::State<plugin_registry::PluginRegistry>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+    plugin_id: String,
+    command: String,
+) -> Result<serde_json::Value, String> {
+    let _ = require_user_from_access_token(&access_token, &auth_config)?;
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    plugin_registry::execute_plugin_command(&conn, &plugin_registry, &plugin_id, &command)
 }
 
 #[derive(Deserialize)]
@@ -2108,6 +2188,8 @@ pub fn run() {
     // Register telemetry subscriber
     let telemetry_fn = create_telemetry_subscriber();
     event_bus.register(telemetry_fn);
+
+    let plugin_registry = plugin_registry::PluginRegistry::new();
     
     println!("✓ Phase 2 Infrastructure Activated:");
     println!("  • EventBus initialized");
@@ -2124,6 +2206,7 @@ pub fn run() {
         .manage(registry)
         .manage(event_bus)
         .manage(permissions)
+        .manage(plugin_registry.clone())
         .setup(move |app| {
             // Initialize memory database in app data directory
             let app_data_dir = app.path().app_data_dir().unwrap_or_else(|_| {
@@ -2147,11 +2230,31 @@ pub fn run() {
             database::verify_database(&conn)
                 .expect("Failed to verify database integrity");
 
+            plugin_registry::seed_registered_plugins(&conn, &plugin_registry)
+                .expect("Failed to seed plugin registry");
+
             let synced_tasks = scheduler::sync_reminder_tasks(&conn)
                 .expect("Failed to sync reminder tasks");
             
             println!("✓ Memory database initialized: {}", db_path.display());
             println!("✓ Background task scheduler synced {} reminder task(s)", synced_tasks);
+
+            let db_path_for_plugins = db_path.clone();
+            let plugin_registry_for_events = plugin_registry.clone();
+            event_bus_for_setup.register(move |event| {
+                if let Some(plugin_event) = plugin_registry::plugin_event_from_core_event(event) {
+                    match Connection::open(&db_path_for_plugins) {
+                        Ok(conn) => {
+                            if let Err(error) = plugin_registry::dispatch_event(&conn, &plugin_registry_for_events, &plugin_event) {
+                                eprintln!("⚠️  Plugin event dispatch failed: {}", error);
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("⚠️  Plugin event dispatch DB open failed: {}", error);
+                        }
+                    }
+                }
+            });
             
             let memory_store = MemoryStore {
                 conn: Mutex::new(conn),
@@ -2180,6 +2283,12 @@ pub fn run() {
             get_memories,
             get_reminders,
             get_command_history,
+            get_plugins,
+            get_active_plugins,
+            enable_plugin,
+            disable_plugin,
+            update_plugin_config,
+            execute_plugin_command,
             check_reminders_now,
             delete_memory,
             finish_reminder,

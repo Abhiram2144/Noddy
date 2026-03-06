@@ -68,9 +68,11 @@ interface Memory {
 interface Integration {
   id: string;
   name: string;
-  icon: LucideIcon;
-  connected: boolean;
-  color: string;
+  enabled: boolean;
+  description: string;
+  provider: string;
+  capabilities: string[];
+  config_json?: string | null;
 }
 
 interface TestCommandResponse {
@@ -162,14 +164,44 @@ async function fetchMemories(accessToken: string): Promise<Memory[]> {
   }
 }
 
+function mapPluginRecord(plugin: any): Integration {
+  return {
+    id: plugin.id || Math.random().toString(),
+    name: plugin.name || "Unknown Plugin",
+    enabled: plugin.enabled === true,
+    description: plugin.description || "No description available.",
+    provider: plugin.provider || "custom",
+    capabilities: Array.isArray(plugin.capabilities) ? plugin.capabilities : [],
+    config_json: plugin.config_json ?? "{}",
+  };
+}
+
+async function fetchIntegrations(accessToken: string): Promise<Integration[]> {
+  try {
+    const data = await invoke<any>("get_plugins", { accessToken });
+    if (Array.isArray(data)) {
+      return data.map(mapPluginRecord);
+    }
+    return [];
+  } catch (error) {
+    console.warn("Failed to fetch plugins:", error);
+    return [];
+  }
+}
+
 // ============================================================================
 // MOCK DATA (Fallback for development)
 // ============================================================================
 
-const mockIntegrations: Integration[] = [
-  { id: "1", name: "Google Calendar", icon: Calendar, connected: false, color: "#4285F4" },
-  { id: "2", name: "Outlook", icon: Mail, connected: false, color: "#0078D4" },
-];
+const integrationVisuals: Record<string, { icon: LucideIcon; color: string }> = {
+  google: { icon: Calendar, color: "#4285F4" },
+  outlook: { icon: Mail, color: "#0078D4" },
+  custom: { icon: Zap, color: "#8b7bea" },
+};
+
+function getIntegrationVisual(integration: Integration) {
+  return integrationVisuals[integration.provider] || integrationVisuals.custom;
+}
 
 // ============================================================================
 // MAIN APP COMPONENT
@@ -182,7 +214,7 @@ function App() {
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [commandHistory, setCommandHistory] = useState<CommandHistory[]>([]);
   const [memories, setMemories] = useState<Memory[]>([]);
-  const [integrations, setIntegrations] = useState(mockIntegrations);
+  const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [testResults, setTestResults] = useState<TestCommandResult[]>([]);
   const [isLoadingDashboard, setIsLoadingDashboard] = useState(true);
@@ -208,10 +240,12 @@ function App() {
           fetchCommandHistory(accessToken),
           fetchMemories(accessToken),
         ]);
+        const integrationsData = await fetchIntegrations(accessToken);
         
         setReminders(remindersData);
         setCommandHistory(historyData);
         setMemories(memoriesData);
+        setIntegrations(integrationsData);
       } finally {
         setIsLoadingDashboard(false);
       }
@@ -378,7 +412,7 @@ function App() {
       <main className="main-panel">
         <AnimatePresence mode="wait">
           {currentView === "dashboard" && (
-            <DashboardView key="dashboard" reminders={reminders} history={commandHistory} memories={memories} isLoading={isLoadingDashboard} />
+            <DashboardView key="dashboard" reminders={reminders} history={commandHistory} memories={memories} integrations={integrations} isLoading={isLoadingDashboard} />
           )}
           {currentView === "reminders" && (
             <RemindersView key="reminders" reminders={reminders} setReminders={setReminders} invokeAuthed={invokeAuthed} />
@@ -399,7 +433,7 @@ function App() {
             <TestCommandsView key="test" testResults={testResults} setTestResults={setTestResults} invokeAuthed={invokeAuthed} />
           )}
           {currentView === "integrations" && (
-            <IntegrationsView key="integrations" integrations={integrations} setIntegrations={setIntegrations} />
+            <IntegrationsView key="integrations" integrations={integrations} setIntegrations={setIntegrations} invokeAuthed={invokeAuthed} />
           )}
           {currentView === "settings" && (
             <SettingsView key="settings" />
@@ -463,7 +497,7 @@ function App() {
 // DASHBOARD VIEW
 // ============================================================================
 
-function DashboardView({ reminders, history, memories, isLoading }: { reminders: Reminder[], history: CommandHistory[], memories: Memory[], isLoading: boolean }) {
+function DashboardView({ reminders, history, memories, integrations, isLoading }: { reminders: Reminder[], history: CommandHistory[], memories: Memory[], integrations: Integration[], isLoading: boolean }) {
   return (
     <motion.div
       className="panel-container"
@@ -596,21 +630,30 @@ function DashboardView({ reminders, history, memories, isLoading }: { reminders:
             </h3>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            {mockIntegrations.map((integration) => (
-              <div key={integration.id} className="list-item">
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                    <div style={{ color: integration.color, display: "flex", alignItems: "center" }}>
-                      <integration.icon size={20} />
-                    </div>
-                    <span style={{ fontSize: "14px", color: "var(--text-primary)" }}>{integration.name}</span>
-                  </div>
-                  <span className={`badge ${integration.connected ? "badge-success" : "badge-error"}`}>
-                    {integration.connected ? "Connected" : "Disconnected"}
-                  </span>
-                </div>
+            {integrations.length === 0 ? (
+              <div className="list-item">
+                <div style={{ fontSize: "13px", color: "var(--text-secondary)" }}>No plugins installed yet</div>
               </div>
-            ))}
+            ) : (
+              integrations.map((integration) => {
+                const visual = getIntegrationVisual(integration);
+                return (
+                  <div key={integration.id} className="list-item">
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                        <div style={{ color: visual.color, display: "flex", alignItems: "center" }}>
+                          <visual.icon size={20} />
+                        </div>
+                        <span style={{ fontSize: "14px", color: "var(--text-primary)" }}>{integration.name}</span>
+                      </div>
+                      <span className={`badge ${integration.enabled ? "badge-success" : "badge-error"}`}>
+                        {integration.enabled ? "Enabled" : "Disabled"}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
         </motion.div>
       </div>
@@ -1069,15 +1112,73 @@ function MemoryView({
 
 function IntegrationsView({ 
   integrations, 
-  setIntegrations 
+  setIntegrations,
+  invokeAuthed 
 }: { 
   integrations: Integration[], 
-  setIntegrations: React.Dispatch<React.SetStateAction<Integration[]>> 
+  setIntegrations: React.Dispatch<React.SetStateAction<Integration[]>>,
+  invokeAuthed: <T>(command: string, payload?: Record<string, unknown>) => Promise<T>
 }) {
-  const toggleConnection = (id: string) => {
-    setIntegrations(integrations.map(int => 
-      int.id === id ? { ...int, connected: !int.connected } : int
-    ));
+  const [selectedPluginId, setSelectedPluginId] = useState<string | null>(integrations[0]?.id ?? null);
+  const [configDraft, setConfigDraft] = useState("{}");
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    if (!selectedPluginId && integrations.length > 0) {
+      setSelectedPluginId(integrations[0].id);
+      return;
+    }
+
+    if (selectedPluginId && !integrations.some((integration) => integration.id === selectedPluginId)) {
+      setSelectedPluginId(integrations[0]?.id ?? null);
+    }
+  }, [integrations, selectedPluginId]);
+
+  const selectedPlugin = integrations.find((integration) => integration.id === selectedPluginId) ?? null;
+
+  useEffect(() => {
+    setConfigDraft(selectedPlugin?.config_json || "{}");
+  }, [selectedPluginId, selectedPlugin?.config_json]);
+
+  const refreshIntegrations = async () => {
+    const updated = await invokeAuthed<any[]>("get_plugins");
+    setIntegrations(updated.map(mapPluginRecord));
+  };
+
+  const togglePlugin = async (plugin: Integration) => {
+    setIsSaving(true);
+    try {
+      if (plugin.enabled) {
+        await invokeAuthed("disable_plugin", { pluginId: plugin.id });
+      } else {
+        await invokeAuthed("enable_plugin", { pluginId: plugin.id });
+      }
+      await refreshIntegrations();
+    } catch (error) {
+      console.error("Failed to toggle plugin:", error);
+      alert(`Failed to update plugin state: ${error}`);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const savePluginConfig = async () => {
+    if (!selectedPlugin) return;
+
+    setIsSaving(true);
+    try {
+      JSON.parse(configDraft || "{}");
+      await invokeAuthed("update_plugin_config", {
+        pluginId: selectedPlugin.id,
+        configJson: configDraft,
+      });
+      await refreshIntegrations();
+    } catch (error) {
+      console.error("Failed to save plugin config:", error);
+      alert(`Failed to save plugin config: ${error}`);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -1090,43 +1191,115 @@ function IntegrationsView({
     >
       <div className="panel-header">
         <h1 className="panel-title">Integrations</h1>
-        <p className="panel-subtitle">Connect external services</p>
+        <p className="panel-subtitle">Manage modular plugins and external service integrations</p>
       </div>
 
-      <div className="grid grid-2">
-        {integrations.map((integration, index) => (
-          <motion.div
-            key={integration.id}
-            className="card"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: index * 0.1 }}
-            whileHover={{ y: -4 }}
-          >
-            <div style={{ display: "flex", alignItems: "start", justifyContent: "space-between", marginBottom: "20px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                <div style={{ width: "48px", height: "48px", borderRadius: "12px", background: `${integration.color}15`, display: "flex", alignItems: "center", justifyContent: "center", color: integration.color }}>
-                  <integration.icon size={24} />
+      <div className="grid grid-2" style={{ alignItems: "start" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          {integrations.map((integration, index) => {
+            const visual = getIntegrationVisual(integration);
+            return (
+              <motion.div
+                key={integration.id}
+                className="card"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: index * 0.08 }}
+                whileHover={{ y: -4 }}
+                style={{
+                  border: selectedPluginId === integration.id ? `1px solid ${visual.color}` : undefined,
+                  cursor: "pointer",
+                }}
+                onClick={() => setSelectedPluginId(integration.id)}
+              >
+                <div style={{ display: "flex", alignItems: "start", justifyContent: "space-between", marginBottom: "20px", gap: "16px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                    <div style={{ width: "48px", height: "48px", borderRadius: "12px", background: `${visual.color}15`, display: "flex", alignItems: "center", justifyContent: "center", color: visual.color }}>
+                      <visual.icon size={24} />
+                    </div>
+                    <div>
+                      <h3 style={{ fontSize: "16px", fontWeight: 600, color: "var(--text-primary)", marginBottom: "4px" }}>{integration.name}</h3>
+                      <p style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "8px", lineHeight: 1.5 }}>{integration.description}</p>
+                      <span className={`badge ${integration.enabled ? "badge-success" : "badge-error"}`}>
+                        {integration.enabled ? "Enabled" : "Disabled"}
+                      </span>
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <h3 style={{ fontSize: "16px", fontWeight: 600, color: "var(--text-primary)", marginBottom: "4px" }}>{integration.name}</h3>
-                  <span className={`badge ${integration.connected ? "badge-success" : "badge-error"}`}>
-                    {integration.connected ? "Connected" : "Disconnected"}
-                  </span>
+                <motion.button
+                  className={`btn ${integration.enabled ? "btn-secondary" : "btn-primary"}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void togglePlugin(integration);
+                  }}
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  style={{ width: "100%" }}
+                  disabled={isSaving}
+                >
+                  {integration.enabled ? "Disable Plugin" : "Enable Plugin"}
+                </motion.button>
+              </motion.div>
+            );
+          })}
+        </div>
+
+        <motion.div
+          className="card"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.15 }}
+          style={{ position: "sticky", top: "24px" }}
+        >
+          {selectedPlugin ? (
+            <>
+              <div style={{ marginBottom: "20px" }}>
+                <h3 style={{ fontSize: "18px", fontWeight: 600, color: "var(--text-primary)", marginBottom: "6px" }}>{selectedPlugin.name}</h3>
+                <p style={{ fontSize: "13px", color: "var(--text-secondary)", lineHeight: 1.6 }}>{selectedPlugin.description}</p>
+              </div>
+
+              <div style={{ marginBottom: "20px" }}>
+                <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px", fontWeight: 500 }}>Capabilities</p>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                  {selectedPlugin.capabilities.map((capability) => (
+                    <span key={capability} className="badge badge-primary">
+                      {capability}
+                    </span>
+                  ))}
                 </div>
               </div>
+
+              <div>
+                <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px", fontWeight: 500 }}>Configuration JSON</p>
+                <textarea
+                  value={configDraft}
+                  onChange={(event) => setConfigDraft(event.target.value)}
+                  className="search-input"
+                  style={{ minHeight: "240px", width: "100%", resize: "vertical", fontFamily: "monospace", fontSize: "13px" }}
+                />
+                <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "8px", lineHeight: 1.5 }}>
+                  Example keys: Google Calendar uses calendar_id. Outlook uses task_list. Additional keys can be added without changing the core system.
+                </p>
+              </div>
+
+              <motion.button
+                className="btn btn-primary"
+                onClick={() => void savePluginConfig()}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                style={{ width: "100%", marginTop: "16px" }}
+                disabled={isSaving}
+              >
+                {isSaving ? "Saving..." : "Save Configuration"}
+              </motion.button>
+            </>
+          ) : (
+            <div className="empty-state">
+              <Zap className="empty-state-icon" />
+              <p>Select a plugin to view or edit its configuration</p>
             </div>
-            <motion.button
-              className={`btn ${integration.connected ? "btn-secondary" : "btn-primary"}`}
-              onClick={() => toggleConnection(integration.id)}
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              style={{ width: "100%" }}
-            >
-              {integration.connected ? "Disconnect" : "Connect"}
-            </motion.button>
-          </motion.div>
-        ))}
+          )}
+        </motion.div>
       </div>
     </motion.div>
   );

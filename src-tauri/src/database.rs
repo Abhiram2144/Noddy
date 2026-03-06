@@ -14,6 +14,7 @@ pub fn initialize_database(conn: &Connection) -> SqliteResult<()> {
     create_memory_edges_table(conn)?;
     create_reminders_table(conn)?;
     create_background_tasks_table(conn)?;
+    create_plugins_table(conn)?;
     create_command_history_table(conn)?;
     create_memory_embeddings_table(conn)?;
     create_users_table(conn)?;
@@ -148,6 +149,22 @@ fn create_background_tasks_table(conn: &Connection) -> SqliteResult<()> {
     )?;
 
     println!("✓ background_tasks table ready");
+    Ok(())
+}
+
+/// Plugins table: Stores modular integration state and configuration
+fn create_plugins_table(conn: &Connection) -> SqliteResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS plugins (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            enabled INTEGER NOT NULL,
+            config_json TEXT
+        )",
+        [],
+    )?;
+
+    println!("✓ plugins table ready");
     Ok(())
 }
 
@@ -373,6 +390,12 @@ fn create_indexes(conn: &Connection) -> SqliteResult<()> {
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_background_tasks_type_status ON background_tasks(task_type, status)",
+        [],
+    )?;
+
+    // Plugin indexes
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_plugins_enabled ON plugins(enabled)",
         [],
     )?;
     
