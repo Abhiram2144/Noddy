@@ -13,6 +13,7 @@ pub fn initialize_database(conn: &Connection) -> SqliteResult<()> {
     create_memory_tag_links_table(conn)?;
     create_memory_edges_table(conn)?;
     create_reminders_table(conn)?;
+    create_background_tasks_table(conn)?;
     create_command_history_table(conn)?;
     create_memory_embeddings_table(conn)?;
     create_users_table(conn)?;
@@ -128,6 +129,25 @@ fn create_reminders_table(conn: &Connection) -> SqliteResult<()> {
     )?;
     
     println!("✓ reminders table ready");
+    Ok(())
+}
+
+/// Background tasks table: Central queue for reminders and future automation
+fn create_background_tasks_table(conn: &Connection) -> SqliteResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS background_tasks (
+            task_id TEXT PRIMARY KEY,
+            task_type TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            execute_at INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at INTEGER,
+            updated_at INTEGER
+        )",
+        [],
+    )?;
+
+    println!("✓ background_tasks table ready");
     Ok(())
 }
 
@@ -342,6 +362,17 @@ fn create_indexes(conn: &Connection) -> SqliteResult<()> {
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_reminders_user_id ON reminders(user_id)",
+        [],
+    )?;
+
+    // Background task indexes
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_background_tasks_status_execute_at ON background_tasks(status, execute_at ASC)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_background_tasks_type_status ON background_tasks(task_type, status)",
         [],
     )?;
     

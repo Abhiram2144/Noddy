@@ -16,6 +16,8 @@ mod reminder_store;
 mod history_store;
 mod memory_graph_repository;
 mod memory_intelligence_service;
+mod scheduler;
+mod worker;
 mod auth_service;
 
 // Command History architecture (repository + service layers)
@@ -87,6 +89,7 @@ enum Event {
     MemorySaved(String),                             // content
     ReminderScheduled(String),                       // reminder_json
     ReminderTriggered(String),                       // reminder_content
+    TaskCompleted { task_id: String, task_type: String },
     ErrorOccurred(String),                           // error_message
 }
 
@@ -232,6 +235,12 @@ impl TelemetryEvent {
                     }
                 );
                 ("ReminderTriggered".to_string(), m)
+            }
+            Event::TaskCompleted { task_id, task_type } => {
+                let mut m = HashMap::new();
+                m.insert("task_id".to_string(), task_id.clone());
+                m.insert("task_type".to_string(), task_type.clone());
+                ("TaskCompleted".to_string(), m)
             }
             Event::ErrorOccurred(msg) => {
                 let mut m = HashMap::new();
@@ -1173,43 +1182,19 @@ fn set_reminder(memory_store: &MemoryStore, user_id: &str, json_value: &str) -> 
     
     // Use reminder_store service to create reminder
     let reminder_id = reminder_store::create_reminder(&conn, user_id, content.clone(), trigger_at, None)?;
+
+    let reminder = reminder_store::Reminder {
+        id: reminder_id.clone(),
+        user_id: user_id.to_string(),
+        content,
+        trigger_at,
+        status: reminder_store::status::PENDING.to_string(),
+        source: "user_request".to_string(),
+        memory_id: None,
+    };
+    scheduler::schedule_reminder(&conn, &reminder)?;
     
     println!("✓ Reminder stored successfully with ID: {}", reminder_id);
-    
-    Ok(())
-}
-
-fn check_expired_reminders(memory_store: &MemoryStore, event_bus: &EventBus, app_handle: Option<&tauri::AppHandle>) -> Result<(), String> {
-    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-    
-    // Use reminder_store service to get due reminders
-    let due_reminders = reminder_store::get_due_reminders_global(&conn, 0)?;
-    
-    // Process each due reminder
-    for reminder in due_reminders {
-        println!("🔔 REMINDER: {}", reminder.content);
-        
-        // Update reminder status to triggered
-        let _ = reminder_store::update_reminder_status(
-            &conn,
-            &reminder.user_id,
-            &reminder.id,
-            reminder_store::status::TRIGGERED,
-        );
-        
-        // Emit reminder event to frontend. Frontend shows clickable desktop notification.
-        if let Some(app) = app_handle {
-            let _ = app.emit("reminder_fired", serde_json::json!({
-                "id": reminder.id,
-                "content": reminder.content,
-                "user_id": reminder.user_id
-            }));
-            println!("✓ Reminder event emitted to frontend");
-        }
-        
-        // Emit ReminderTriggered event for telemetry and observability
-        event_bus.emit(&Event::ReminderTriggered(reminder.content));
-    }
     
     Ok(())
 }
@@ -1238,6 +1223,7 @@ fn finish_reminder(
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
     
     // Delete reminder using service layer
+    scheduler::cancel_reminder_task(&conn, &reminder_id)?;
     reminder_store::delete_reminder(&conn, &user_id, &reminder_id)?;
     Ok("Reminder finished".to_string())
 }
@@ -1255,6 +1241,9 @@ fn snooze_reminder(
     
     // Snooze reminder using service layer
     reminder_store::snooze_reminder(&conn, &user_id, &reminder_id, snooze_minutes)?;
+
+    let reminder = reminder_store::get_reminder(&conn, &user_id, &reminder_id)?;
+    scheduler::schedule_reminder(&conn, &reminder)?;
     Ok(format!("Reminder snoozed for {} minutes", snooze_minutes.max(1)))
 }
 
@@ -1866,8 +1855,9 @@ fn check_reminders_now(
 ) -> Result<String, String> {
     let _ = require_user_from_access_token(&access_token, &auth_config)?;
     println!("🔍 Manual reminder check triggered");
-    check_expired_reminders(&memory_store, &event_bus, Some(&app))?;
-    Ok("Reminder check completed".to_string())
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let executed = worker::run_pending_tasks_once(&conn, &event_bus, Some(&app))?;
+    Ok(format!("Reminder check completed, executed {} task(s)", executed))
 }
 
 // Graph command to rebuild memory relationship graph
@@ -2156,34 +2146,21 @@ pub fn run() {
             // Verify database integrity
             database::verify_database(&conn)
                 .expect("Failed to verify database integrity");
+
+            let synced_tasks = scheduler::sync_reminder_tasks(&conn)
+                .expect("Failed to sync reminder tasks");
             
             println!("✓ Memory database initialized: {}", db_path.display());
+            println!("✓ Background task scheduler synced {} reminder task(s)", synced_tasks);
             
             let memory_store = MemoryStore {
                 conn: Mutex::new(conn),
             };
             
-            // Clone memory store for background thread
-            let db_path_clone = db_path.clone();
-            let memory_store_clone = MemoryStore {
-                conn: Mutex::new(Connection::open(&db_path_clone).expect("Failed to open database for reminder thread")),
-            };
-            
-            // Spawn background reminder checker thread
-            // Clone event_bus for background thread to emit ReminderTriggered events
             let event_bus_clone = event_bus_for_setup.clone();
             let app_handle = app.handle().clone();
-            std::thread::spawn(move || {
-                loop {
-                    std::thread::sleep(std::time::Duration::from_secs(30));
-                    
-                    if let Err(e) = check_expired_reminders(&memory_store_clone, &event_bus_clone, Some(&app_handle)) {
-                        eprintln!("⚠️  Reminder check failed: {}", e);
-                    }
-                }
-            });
-            
-            println!("✓ Background reminder checker started (checks every 30 seconds)");
+            worker::start_worker_loop(db_path.clone(), event_bus_clone, app_handle);
+            println!("✓ Background worker started (checks every 10 seconds)");
             
             let jwt_secret = std::env::var("NODDY_JWT_SECRET")
                 .unwrap_or_else(|_| "noddy-local-dev-secret-change-me".to_string());

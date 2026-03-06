@@ -77,21 +77,13 @@ pub fn get_pending_reminders(conn: &Connection, user_id: &str) -> Result<Vec<Rem
     Ok(reminders)
 }
 
-pub fn get_due_reminders_global(conn: &Connection, seconds_ahead: i64) -> Result<Vec<Reminder>, String> {
-    let now = current_timestamp();
-    let deadline = now + seconds_ahead;
-
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, user_id, content, trigger_at, status, source, memory_id
-             FROM reminders
-             WHERE status = ?1 AND trigger_at <= ?2
-             ORDER BY trigger_at ASC",
-        )
-        .map_err(|e| format!("Failed to prepare statement: {}", e))?;
-
-    let reminders = stmt
-        .query_map(params![status::PENDING, deadline], |row| {
+pub fn get_reminder(conn: &Connection, user_id: &str, reminder_id: &str) -> Result<Reminder, String> {
+    conn.query_row(
+        "SELECT id, user_id, content, trigger_at, status, source, memory_id
+         FROM reminders
+         WHERE id = ?1 AND user_id = ?2",
+        params![reminder_id, user_id],
+        |row| {
             Ok(Reminder {
                 id: row.get(0)?,
                 user_id: row.get(1)?,
@@ -101,12 +93,9 @@ pub fn get_due_reminders_global(conn: &Connection, seconds_ahead: i64) -> Result
                 source: row.get(5)?,
                 memory_id: row.get(6)?,
             })
-        })
-        .map_err(|e| format!("Failed to query due reminders: {}", e))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to map due reminders: {}", e))?;
-
-    Ok(reminders)
+        },
+    )
+    .map_err(|e| format!("Failed to fetch reminder: {}", e))
 }
 
 pub fn update_reminder_status(
@@ -140,7 +129,7 @@ pub fn snooze_reminder(
 
     conn.execute(
         "UPDATE reminders SET trigger_at = ?1, status = ?2 WHERE id = ?3 AND user_id = ?4",
-        params![new_trigger_time, status::SNOOZED, reminder_id, user_id],
+        params![new_trigger_time, status::PENDING, reminder_id, user_id],
     )
     .map_err(|e| format!("Failed to snooze reminder: {}", e))?;
 
