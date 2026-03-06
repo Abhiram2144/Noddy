@@ -400,3 +400,14 @@ input[type="number"].search-input::-webkit-outer-spin-button {
     opacity: 0.5;
   }
 }
+
+@keyframes bounce {
+  0%, 80%, 100% {
+    transform: scale(0);
+    opacity: 0.5;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}

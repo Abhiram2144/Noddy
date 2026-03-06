@@ -308,9 +308,7 @@ export function MemoryListView({ onSelectMemory }: MemoryListViewProps) {
                       }}
                       whileHover={{ scale: 1.15 }}
                       whileTap={{ scale: 0.9 }}
-                      style={{ padding: "8px", borderRadius: "8px", opacity: 0, transition: "opacity 0.2s", background: "transparent", border: "none", cursor: "pointer" }}
-                      onMouseEnter={(e) => e.currentTarget.style.opacity = "1"}
-                      onMouseLeave={(e) => e.currentTarget.style.opacity = "0"}
+                      style={{ padding: "8px", borderRadius: "8px", background: "transparent", border: "none", cursor: "pointer" }}
                     >
                       <Trash2 style={{ width: "16px", height: "16px", color: "var(--error)" }} />
                     </motion.button>

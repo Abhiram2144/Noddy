@@ -26,6 +26,9 @@ mod auth_service;
 mod command_history_repository;
 mod command_history_service;
 
+// AI module for LLM chat integration
+mod ai;
+
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -2131,8 +2134,35 @@ fn log_intent_dispatch(intent_json: &str, success: bool) {
     println!("{} Intent dispatched: {}", status, intent_json);
 }
 
+// ============================================================================
+// AI CHAT COMMAND
+// ============================================================================
+
+/// Tauri command to handle chat messages with the Gemini LLM.
+/// 
+/// # Arguments
+/// * `message` - The user's chat message
+/// 
+/// # Returns
+/// * `Ok(String)` - The AI assistant's response
+/// * `Err(String)` - Error message if something goes wrong
+#[tauri::command]
+async fn chat_with_ai(message: String) -> Result<String, String> {
+    ai::handle_chat(message).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Load environment variables from .env file (development)
+    #[cfg(debug_assertions)]
+    {
+        if let Err(e) = dotenvy::dotenv() {
+            println!("⚠️  Warning: Could not load .env file: {}", e);
+        } else {
+            println!("✓ Environment variables loaded from .env");
+        }
+    }
+    
     // Discover from PATH
     let mut all_apps = discover_apps_from_path().unwrap_or_else(|e| {
         println!("⚠️  App discovery from PATH failed: {}", e);
@@ -2298,7 +2328,8 @@ pub fn run() {
             get_graph_stats,
             track_memory_access,
             get_graph_data,
-            get_memory_graph
+            get_memory_graph,
+            chat_with_ai
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

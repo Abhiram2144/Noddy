@@ -28,6 +28,7 @@ import "./App.css";
 import { MemoryListView } from "./components/MemoryListView";
 import { MemoryGraphView } from "./components/MemoryGraphView";
 import { CommandHistoryView } from "./components/CommandHistoryView";
+import { ChatView } from "./components/ChatView";
 import { LoginPage } from "./components/LoginPage";
 import { SignupPage } from "./components/SignupPage";
 import { useAuth } from "./auth/AuthContext";
@@ -95,6 +96,7 @@ interface TestCommandResult {
 
 const navItems: NavItem[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { id: "chat", label: "AI Chat", icon: Brain },
   { id: "reminders", label: "Reminders", icon: Bell },
   { id: "history", label: "History", icon: History },
   { id: "memory-list", label: "Memory Bank", icon: List },
@@ -413,6 +415,9 @@ function App() {
         <AnimatePresence mode="wait">
           {currentView === "dashboard" && (
             <DashboardView key="dashboard" reminders={reminders} history={commandHistory} memories={memories} integrations={integrations} isLoading={isLoadingDashboard} />
+          )}
+          {currentView === "chat" && (
+            <ChatView key="chat" />
           )}
           {currentView === "reminders" && (
             <RemindersView key="reminders" reminders={reminders} setReminders={setReminders} invokeAuthed={invokeAuthed} />

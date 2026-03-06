@@ -29,4 +29,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 argon2 = "0.5"
 jsonwebtoken = "9"
 rand = "0.8"
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+dotenvy = "0.15"
 
