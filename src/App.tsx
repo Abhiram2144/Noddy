@@ -27,6 +27,7 @@ import {
 import "./App.css";
 import { MemoryListView } from "./components/MemoryListView";
 import { MemoryGraphView } from "./components/MemoryGraphView";
+import { CommandHistoryView } from "./components/CommandHistoryView";
 import { LoginPage } from "./components/LoginPage";
 import { SignupPage } from "./components/SignupPage";
 import { useAuth } from "./auth/AuthContext";
@@ -383,7 +384,7 @@ function App() {
             <RemindersView key="reminders" reminders={reminders} setReminders={setReminders} invokeAuthed={invokeAuthed} />
           )}
           {currentView === "history" && (
-            <HistoryView key="history" history={commandHistory} />
+            <CommandHistoryView key="history" />
           )}
           {currentView === "memory-list" && (
             <MemoryListView key="memory-list" />
@@ -954,56 +955,6 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
           </div>
         )}
       </AnimatePresence>
-    </motion.div>
-  );
-}
-
-// ============================================================================
-// HISTORY VIEW
-// ============================================================================
-
-function HistoryView({ history }: { history: CommandHistory[] }) {
-  return (
-    <motion.div
-      className="panel-container"
-      initial={{ opacity: 0, x: 40 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -40 }}
-      transition={{ duration: 0.4 }}
-    >
-      <div className="panel-header">
-        <h1 className="panel-title">Command History</h1>
-        <p className="panel-subtitle">Recent command execution logs</p>
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-        {history.map((cmd, index) => (
-          <motion.div
-            key={cmd.id}
-            className="list-item"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: index * 0.05 }}
-            whileHover={{ x: 4 }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "10px" }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: "14px", fontFamily: "monospace", color: "var(--accent-primary)", marginBottom: "6px", background: "var(--bg-primary)", padding: "8px 12px", borderRadius: "6px" }}>
-                  {cmd.command}
-                </div>
-                <div style={{ fontSize: "13px", color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: "16px" }}>
-                  <span>Intent: <strong style={{ color: "var(--text-primary)" }}>{cmd.intent}</strong></span>
-                  <span>Duration: <strong style={{ color: "var(--text-primary)" }}>{cmd.duration}ms</strong></span>
-                  <span>{cmd.timestamp}</span>
-                </div>
-              </div>
-              <span className={`badge ${cmd.success ? "badge-success" : "badge-error"}`}>
-                {cmd.success ? "Success" : "Failed"}
-              </span>
-            </div>
-          </motion.div>
-        ))}
-      </div>
     </motion.div>
   );
 }

@@ -17,6 +17,10 @@ mod history_store;
 mod memory_graph;
 mod auth_service;
 
+// Command History architecture (repository + service layers)
+mod command_history_repository;
+mod command_history_service;
+
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -1730,25 +1734,19 @@ fn execute_action(
         },
     };
 
-    // Log command execution to history store
+    // Record command execution via duration and response outcome.
     let duration_ms = start_time.elapsed().as_millis();
-    let error_msg = if response.success {
-        None
-    } else {
-        Some(response.message.clone())
-    };
-    
-    // Log command to command_history table.
-    // Lock the DB only for this insert to avoid self-deadlock with nested store calls.
+
+    // Record command execution via service → repository → DB.
+    // Uses if-let to avoid failing the response when history write fails.
     if let Ok(conn) = memory_store.conn.lock() {
-        let _ = history_store::log_command(
+        let _ = command_history_service::record_command_execution(
             &conn,
             &user_id,
-            intent_json.clone(),
-            intent_name.to_string(),
-            duration_ms,
+            intent_name,
+            &intent_json,
             response.success,
-            error_msg,
+            duration_ms,
         );
     }
     
@@ -1832,10 +1830,10 @@ fn get_command_history(
     access_token: String,
     limit: Option<i64>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let limit = limit.unwrap_or(10) as i32;
+    let limit = limit.unwrap_or(50) as i32;
     let user_id = require_user_from_access_token(&access_token, &auth_config)?;
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-    let records = history_store::get_command_history(&conn, &user_id, limit, 0)?;
+    let records = command_history_service::fetch_recent_history(&conn, &user_id, limit)?;
 
     Ok(records
         .iter()
@@ -1844,7 +1842,7 @@ fn get_command_history(
                 "id": record.id,
                 "command": record.command_text,
                 "intent": record.intent_name,
-                "timestamp": format_timestamp(record.timestamp),
+                "timestamp": format_timestamp(record.created_at),
                 "success": record.success,
                 "duration": record.duration_ms,
                 "status": record.status,
