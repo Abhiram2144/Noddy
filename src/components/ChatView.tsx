@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { motion, AnimatePresence } from "framer-motion";
 import { Send, Bot, User, Sparkles } from "lucide-react";
+import { useAuth } from "../auth/AuthContext";
 
 interface Message {
   id: string;
@@ -10,7 +11,15 @@ interface Message {
   timestamp: Date;
 }
 
+interface PersistedMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: number;
+}
+
 export function ChatView() {
+  const { getAccessToken } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -21,6 +30,34 @@ export function ChatView() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Load persisted chat history on mount.
+  useEffect(() => {
+    const loadHistory = async () => {
+      try {
+        const accessToken = await getAccessToken();
+        const history = await invoke<PersistedMessage[]>("get_chat_history", {
+          accessToken,
+          limit: 200,
+        });
+
+        if (Array.isArray(history)) {
+          setMessages(
+            history.map((entry) => ({
+              id: entry.id,
+              role: entry.role,
+              content: entry.content,
+              timestamp: new Date((entry.created_at || 0) * 1000),
+            }))
+          );
+        }
+      } catch (error) {
+        console.error("Failed to load chat history:", error);
+      }
+    };
+
+    void loadHistory();
+  }, [getAccessToken]);
 
   // Focus input on mount
   useEffect(() => {
@@ -45,9 +82,12 @@ export function ChatView() {
     setIsLoading(true);
 
     try {
+      const accessToken = await getAccessToken();
+
       // Call Tauri backend
       const response = await invoke<string>("chat_with_ai", {
         message: trimmedMessage,
+        accessToken,
       });
 
       // Create assistant message

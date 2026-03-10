@@ -260,10 +260,11 @@ function App() {
   useEffect(() => {
     if (!user) return;
 
-    let unlisten: (() => void) | undefined;
+    let unlistenReminderFired: (() => void) | undefined;
+    let unlistenReminderScheduled: (() => void) | undefined;
 
     const setup = async () => {
-      unlisten = await listen("reminder_fired", async (event: any) => {
+      unlistenReminderFired = await listen("reminder_fired", async (event: any) => {
         const reminderId = Number(event?.payload?.id);
         const reminderContent = event?.payload?.content || "You have a reminder.";
 
@@ -290,11 +291,22 @@ function App() {
           console.warn("Failed to send notification:", notifError);
         }
       });
+
+      unlistenReminderScheduled = await listen("reminder_scheduled", async (event: any) => {
+        const accessToken = await getAccessToken();
+        if (event?.payload?.user_id && event.payload.user_id !== user.id) {
+          return;
+        }
+
+        const remindersData = await fetchReminders(accessToken);
+        setReminders(remindersData);
+      });
     };
 
     setup();
     return () => {
-      if (unlisten) unlisten();
+      if (unlistenReminderFired) unlistenReminderFired();
+      if (unlistenReminderScheduled) unlistenReminderScheduled();
     };
   }, [getAccessToken, user?.id]);
 

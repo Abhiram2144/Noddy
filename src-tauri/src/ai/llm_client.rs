@@ -37,32 +37,21 @@ struct ResponsePart {
     text: String,
 }
 
-/// Sends a message to Google Gemini API and returns the response text.
-/// 
-/// # Arguments
-/// * `message` - The user's message to send to Gemini
-/// 
-/// # Returns
-/// * `Ok(String)` - The assistant's response text
-/// * `Err(String)` - Error message if the request fails
-pub async fn ask_gemini(message: String) -> Result<String, String> {
-    // Read API key from environment variable
+/// Sends a prompt to Gemini and returns the response text.
+pub async fn generate_structured_response(prompt: String) -> Result<String, String> {
     let api_key = std::env::var("GEMINI_API_KEY")
         .map_err(|_| "GEMINI_API_KEY environment variable not set".to_string())?;
 
-    // Build the request URL with API key
     let url = format!("{}?key={}", GEMINI_API_ENDPOINT, api_key);
 
-    // Build request body
     let request_body = GeminiRequest {
         contents: vec![Content {
             parts: vec![Part {
-                text: message,
+                text: prompt,
             }],
         }],
     };
 
-    // Make the HTTP request
     let client = reqwest::Client::new();
     let response = client
         .post(&url)
@@ -71,7 +60,6 @@ pub async fn ask_gemini(message: String) -> Result<String, String> {
         .await
         .map_err(|e| format!("Failed to send request to Gemini: {}", e))?;
 
-    // Check if the request was successful
     if !response.status().is_success() {
         let status = response.status();
         let error_text = response
@@ -84,18 +72,23 @@ pub async fn ask_gemini(message: String) -> Result<String, String> {
         ));
     }
 
-    // Parse the response
     let gemini_response: GeminiResponse = response
         .json()
         .await
         .map_err(|e| format!("Failed to parse Gemini response: {}", e))?;
 
-    // Extract the text from the first candidate
     let response_text = gemini_response
         .candidates
         .first()
-        .and_then(|c| c.content.parts.first())
-        .map(|p| p.text.clone())
+        .map(|candidate| {
+            candidate
+                .content
+                .parts
+                .iter()
+                .map(|part| part.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
         .ok_or_else(|| "No response text from Gemini".to_string())?;
 
     Ok(response_text)

@@ -16,6 +16,7 @@ pub fn initialize_database(conn: &Connection) -> SqliteResult<()> {
     create_background_tasks_table(conn)?;
     create_plugins_table(conn)?;
     create_command_history_table(conn)?;
+    create_chat_messages_table(conn)?;
     create_memory_embeddings_table(conn)?;
     create_users_table(conn)?;
     create_sessions_table(conn)?;
@@ -187,6 +188,25 @@ fn create_command_history_table(conn: &Connection) -> SqliteResult<()> {
     )?;
     
     println!("✓ command_history table ready");
+    Ok(())
+}
+
+/// Chat messages table: Stores persistent AI conversation history.
+fn create_chat_messages_table(conn: &Connection) -> SqliteResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS chat_messages (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            metadata TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    println!("✓ chat_messages table ready");
     Ok(())
 }
 
@@ -417,6 +437,11 @@ fn create_indexes(conn: &Connection) -> SqliteResult<()> {
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_command_history_user_id ON command_history(user_id)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_messages_user_created_at ON chat_messages(user_id, created_at DESC)",
         [],
     )?;
 

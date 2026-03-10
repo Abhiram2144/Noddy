@@ -36,16 +36,30 @@ interface MemoryGraphViewProps {
   onSelectMemory?: (memoryId: string) => void;
 }
 
-const CLUSTER_COLORS = [
-  "#38bdf8",
-  "#fb7185",
-  "#f59e0b",
-  "#34d399",
-  "#a78bfa",
-  "#f97316",
-  "#22c55e",
-  "#60a5fa",
-];
+type MemoryCategory = "work" | "personal" | "ideas" | "reminders" | "general";
+
+const CATEGORY_COLORS: Record<MemoryCategory, string> = {
+  work: "#38bdf8",
+  personal: "#fb7185",
+  ideas: "#f59e0b",
+  reminders: "#34d399",
+  general: "#a78bfa",
+};
+
+const CATEGORY_LABELS: Record<MemoryCategory, string> = {
+  work: "Work",
+  personal: "Personal",
+  ideas: "Ideas",
+  reminders: "Reminders",
+  general: "General",
+};
+
+const CATEGORY_KEYWORDS: Record<Exclude<MemoryCategory, "general">, string[]> = {
+  work: ["meeting", "project", "client", "deadline", "task", "sprint", "jira", "work", "office"],
+  personal: ["family", "mom", "dad", "friend", "home", "birthday", "personal", "health"],
+  ideas: ["idea", "brainstorm", "concept", "plan", "build", "design", "future", "startup"],
+  reminders: ["remind", "reminder", "tomorrow", "today", "schedule", "appointment", "call", "follow up"],
+};
 
 const ANIMATION_NORMAL = 300;
 
@@ -163,12 +177,51 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
       )
     : graphData.edges;
 
+  // Spread nodes apart and keep visible links between them.
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph || isLoading) return;
+
+    const linkForce = graph.d3Force("link");
+    if (linkForce) {
+      linkForce.distance(90);
+      linkForce.strength(0.8);
+    }
+
+    const chargeForce = graph.d3Force("charge");
+    if (chargeForce) {
+      chargeForce.strength(-120);
+    }
+
+    const collisionForce = graph.d3Force("collision");
+    if (collisionForce) {
+      collisionForce.radius(16);
+    }
+
+    graph.d3ReheatSimulation();
+  }, [isLoading, filteredNodes.length, filteredEdges.length]);
+
   const displayNodes: GraphNode[] = (() => {
     if (filteredNodes.length === 0) return [];
+
+    // For small/medium graphs, seed positions so nodes don't overlap at origin.
+    if (filteredNodes.length <= 30) {
+      const radius = Math.max(120, filteredNodes.length * 20);
+      return filteredNodes.map((node, index) => {
+        const angle = (index / filteredNodes.length) * Math.PI * 2;
+        return {
+          ...node,
+          x: Math.cos(angle) * radius,
+          y: Math.sin(angle) * radius,
+          z: ((index % 6) - 2.5) * 20,
+        };
+      });
+    }
+
     if (filteredEdges.length > 0) return filteredNodes;
 
     // When there are no edges, seed a ring layout so nodes don't stack visually.
-    const radius = Math.max(120, filteredNodes.length * 16);
+    const radius = Math.max(180, filteredNodes.length * 18);
     return filteredNodes.map((node, index) => {
       const angle = (index / filteredNodes.length) * Math.PI * 2;
       return {
@@ -189,23 +242,38 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
     return () => window.clearTimeout(timer);
   }, [isLoading, filteredNodes.length]);
 
-  const clusterCount = new Set(graphData.nodes.map((node) => node.cluster_id)).size;
+  const detectCategory = (node: GraphNode): MemoryCategory => {
+    const text = `${node.label} ${node.content}`.toLowerCase();
 
-  const colorForCluster = (clusterId: string) => {
-    const clusterNumber = Number.parseInt(clusterId.replace("cluster-", ""), 10);
-    if (Number.isNaN(clusterNumber)) {
-      return CLUSTER_COLORS[0];
+    for (const keyword of CATEGORY_KEYWORDS.reminders) {
+      if (text.includes(keyword)) return "reminders";
     }
-    return CLUSTER_COLORS[(clusterNumber - 1) % CLUSTER_COLORS.length];
+    for (const keyword of CATEGORY_KEYWORDS.work) {
+      if (text.includes(keyword)) return "work";
+    }
+    for (const keyword of CATEGORY_KEYWORDS.personal) {
+      if (text.includes(keyword)) return "personal";
+    }
+    for (const keyword of CATEGORY_KEYWORDS.ideas) {
+      if (text.includes(keyword)) return "ideas";
+    }
+
+    return "general";
   };
 
+  const categoryForNode = (node: GraphNode): MemoryCategory => detectCategory(node);
+  const categoryCount = new Set(graphData.nodes.map(categoryForNode)).size;
+
+  const colorForCategory = (category: MemoryCategory) => CATEGORY_COLORS[category];
+  const labelForCategory = (category: MemoryCategory) => CATEGORY_LABELS[category];
+
   const nodeColor = (node: GraphNode) => {
-    if (node.id === selectedNode?.id) return "#ddd6fe";
-    return colorForCluster(node.cluster_id);
+    if (node.id === selectedNode?.id) return "#ffffff";
+    return colorForCategory(categoryForNode(node));
   };
 
   const nodeSize = (node: GraphNode) => {
-    const baseSize = 6 + (node.importance || 0.5) * 8;
+    const baseSize = 8 + (node.importance || 0.5) * 10;
     return node.id === selectedNode?.id ? baseSize * 1.2 : baseSize;
   };
 
@@ -220,7 +288,7 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
       {/* Header */}
       <div className="panel-header">
         <h1 className="panel-title">Knowledge Graph</h1>
-        <p className="panel-subtitle">Visualize clustered relationships and importance across your memories</p>
+        <p className="panel-subtitle">Visualize category-based relationships and importance across your memories</p>
       </div>
 
       {/* Controls Bar */}
@@ -321,26 +389,32 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
                 relationship: e.relationship,
               })),
             }}
-            nodeLabel={(n: any) => `${n.label}\nImportance: ${Math.round((n.importance || 0) * 100)}%\nCluster: ${n.cluster_id}`}
+            nodeLabel={(n: any) => `${n.label}\nImportance: ${Math.round((n.importance || 0) * 100)}%\nCategory: ${labelForCategory(categoryForNode(n as GraphNode))}`}
             nodeColor={nodeColor}
             nodeVal={nodeSize}
             nodeOpacity={1}
-            nodeRelSize={9}
-            nodeResolution={16}
+            nodeRelSize={11}
+            nodeResolution={24}
             linkColor={(link: any) =>
-              link.relationship === "keyword_similarity" ? "#94a3b8" : "#6b7280"
+              link.relationship === "keyword_similarity" ? "#cbd5e1" : "#94a3b8"
             }
-            linkOpacity={0.55}
-            linkWidth={(link: any) => 1 + (link.value || 0) * 1.8}
+            linkOpacity={0.98}
+            linkWidth={(link: any) => 2.2 + (link.value || 0) * 2.6}
             onNodeClick={handleNodeClick}
-            backgroundColor="#111111"
+            backgroundColor="#05070d"
             width={graphSize.width}
             height={graphSize.height}
-            d3VelocityDecay={0.22}
+            d3VelocityDecay={0.25}
             numDimensions={3}
             nodeVisibility={(n: any) => filteredNodes.some((fn) => fn.id === n.id)}
             warmupTicks={100}
             cooldownTicks={300}
+            onEngineStop={() => {
+              if (graphRef.current) {
+                graphRef.current.zoomToFit(360, 30);
+                setZoom(1);
+              }
+            }}
             enableNodeDrag
           />
         )}
@@ -388,15 +462,14 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
               minWidth: "180px",
             }}
           >
-            <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "16px", fontWeight: 500 }}>Cluster Colors</p>
+            <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "16px", fontWeight: 500 }}>Category Colors</p>
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              {Array.from({ length: Math.min(clusterCount || 1, CLUSTER_COLORS.length) }, (_, index) => {
-                const clusterId = `cluster-${index + 1}`;
-                const color = colorForCluster(clusterId);
+              {Array.from(new Set(filteredNodes.map(categoryForNode))).map((category) => {
+                const color = colorForCategory(category);
                 return (
-                <div key={clusterId} style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <div key={category} style={{ display: "flex", alignItems: "center", gap: "12px" }}>
                   <div style={{ width: "12px", height: "12px", borderRadius: "50%", backgroundColor: color, boxShadow: `0 0 8px ${color}40` }} />
-                  <span style={{ fontSize: "13px", color: "var(--text-primary)", textTransform: "capitalize" }}>{clusterId}</span>
+                  <span style={{ fontSize: "13px", color: "var(--text-primary)", textTransform: "capitalize" }}>{labelForCategory(category)}</span>
                 </div>
               );})}
             </div>
@@ -425,7 +498,7 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
               <span style={{ fontSize: "20px", fontWeight: 600, color: "#a78bfa" }}>{filteredEdges.length}</span> connections
             </div>
             <div style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
-              <span style={{ fontSize: "20px", fontWeight: 600, color: "#a78bfa" }}>{clusterCount}</span> clusters
+              <span style={{ fontSize: "20px", fontWeight: 600, color: "#a78bfa" }}>{categoryCount}</span> categories
             </div>
           </motion.div>
         )}
@@ -517,7 +590,7 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
                 </div>
 
                 <div>
-                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px", fontWeight: 500 }}>Cluster</p>
+                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px", fontWeight: 500 }}>Category</p>
                   <span
                     style={{
                       display: "inline-block",
@@ -526,11 +599,11 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
                       color: "white",
                       fontSize: "14px",
                       fontWeight: 500,
-                      backgroundColor: colorForCluster(selectedNode.cluster_id),
-                      boxShadow: `0 4px 12px ${colorForCluster(selectedNode.cluster_id)}40`
+                      backgroundColor: colorForCategory(categoryForNode(selectedNode)),
+                      boxShadow: `0 4px 12px ${colorForCategory(categoryForNode(selectedNode))}40`
                     }}
                   >
-                    {selectedNode.cluster_id}
+                    {labelForCategory(categoryForNode(selectedNode))}
                   </span>
                 </div>
 

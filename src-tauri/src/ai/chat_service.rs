@@ -1,22 +1,29 @@
-use super::llm_client;
+use super::orchestrator;
 
-/// Handles a chat message from the user.
-/// This is the main entry point for chat functionality.
-/// 
-/// # Arguments
-/// * `message` - The user's message
-/// 
-/// # Returns
-/// * `Ok(String)` - The AI assistant's response
-/// * `Err(String)` - Error message if something goes wrong
-pub async fn handle_chat(message: String) -> Result<String, String> {
-    // Validate input
+/// Handles a user message through the AI orchestrator.
+pub async fn handle_chat(
+    message: String,
+    user_id: &str,
+    app_handle: &tauri::AppHandle,
+    registry: &crate::AppRegistry,
+    memory_store: &crate::MemoryStore,
+    plugin_registry: &crate::plugin_registry::PluginRegistry,
+    event_bus: &crate::EventBus,
+    permissions: &crate::PermissionManager,
+) -> Result<String, String> {
     if message.trim().is_empty() {
         return Err("Message cannot be empty".to_string());
     }
 
-    // Call the LLM client
-    let response = llm_client::ask_gemini(message).await?;
-
-    Ok(response)
+    orchestrator::process_user_command(
+        message,
+        user_id,
+        app_handle,
+        registry,
+        memory_store,
+        plugin_registry,
+        event_bus,
+        permissions,
+    )
+    .await
 }

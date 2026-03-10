@@ -14,6 +14,7 @@ mod database;
 mod memory_store;
 mod reminder_store;
 mod history_store;
+mod chat_history_store;
 mod memory_graph_repository;
 mod memory_intelligence_service;
 mod plugin_interface;
@@ -1767,7 +1768,12 @@ fn execute_action(
             match set_reminder(&memory_store, &user_id, &reminder_json) {
                 Ok(()) => {
                     let duration_ms = start_time.elapsed().as_millis();
-                    event_bus.emit(&Event::ReminderScheduled(content));
+                    event_bus.emit(&Event::ReminderScheduled(content.clone()));
+                    let _ = app_handle.emit("reminder_scheduled", serde_json::json!({
+                        "user_id": user_id,
+                        "content": content,
+                        "trigger_at": trigger_at
+                    }));
                     event_bus.emit(&Event::IntentExecuted {
                         intent_name: "set_reminder".to_string(),
                         duration_ms,
@@ -2147,8 +2153,74 @@ fn log_intent_dispatch(intent_json: &str, success: bool) {
 /// * `Ok(String)` - The AI assistant's response
 /// * `Err(String)` - Error message if something goes wrong
 #[tauri::command]
-async fn chat_with_ai(message: String) -> Result<String, String> {
-    ai::handle_chat(message).await
+async fn chat_with_ai(
+    message: String,
+    access_token: String,
+    app_handle: tauri::AppHandle,
+    registry: tauri::State<'_, AppRegistry>,
+    memory_store: tauri::State<'_, MemoryStore>,
+    plugin_registry: tauri::State<'_, plugin_registry::PluginRegistry>,
+    event_bus: tauri::State<'_, EventBus>,
+    permissions: tauri::State<'_, PermissionManager>,
+    auth_config: tauri::State<'_, AuthConfig>,
+) -> Result<String, String> {
+    let user_id = require_user_from_access_token(&access_token, &auth_config)?;
+
+    {
+        let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        chat_history_store::create_message(&conn, &user_id, "user", message.clone())?;
+    }
+
+    let ai_result = ai::handle_chat(
+        message,
+        &user_id,
+        &app_handle,
+        &registry,
+        &memory_store,
+        &plugin_registry,
+        &event_bus,
+        &permissions,
+    )
+    .await;
+
+    match ai_result {
+        Ok(response) => {
+            let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+            chat_history_store::create_message(&conn, &user_id, "assistant", response.clone())?;
+            Ok(response)
+        }
+        Err(error) => {
+            let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+            let persisted_error = format!("Error: {}", error);
+            let _ = chat_history_store::create_message(&conn, &user_id, "assistant", persisted_error);
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+fn get_chat_history(
+    memory_store: tauri::State<MemoryStore>,
+    auth_config: tauri::State<AuthConfig>,
+    access_token: String,
+    limit: Option<i64>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let user_id = require_user_from_access_token(&access_token, &auth_config)?;
+    let safe_limit = limit.unwrap_or(100) as i32;
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let history = chat_history_store::get_messages(&conn, &user_id, safe_limit)?;
+
+    Ok(history
+        .iter()
+        .map(|message| {
+            serde_json::json!({
+                "id": message.id,
+                "role": message.role,
+                "content": message.content,
+                "created_at": message.created_at
+            })
+        })
+        .collect())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2329,6 +2401,7 @@ pub fn run() {
             track_memory_access,
             get_graph_data,
             get_memory_graph,
+            get_chat_history,
             chat_with_ai
         ])
         .run(tauri::generate_context!())
