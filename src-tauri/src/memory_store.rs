@@ -17,6 +17,10 @@ pub fn create_memory(
     content: String,
     _tags: Option<Vec<String>>,
 ) -> Result<String, String> {
+    if let Some(existing_id) = find_near_duplicate_memory(conn, user_id, &content, 0.85)? {
+        return Ok(existing_id);
+    }
+
     let now = current_timestamp();
     let uses_integer_id = memories_id_is_integer(conn)?;
 
@@ -41,6 +45,20 @@ pub fn create_memory(
     };
 
     Ok(id)
+}
+
+pub fn update_memory_content(
+    conn: &Connection,
+    user_id: &str,
+    memory_id: &str,
+    new_content: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE memories SET content = ?1, updated_at = ?2 WHERE id = ?3 AND user_id = ?4",
+        params![new_content, current_timestamp(), memory_id, user_id],
+    )
+    .map_err(|e| format!("Failed to update memory: {}", e))?;
+    Ok(())
 }
 
 pub fn get_memories(
@@ -186,8 +204,10 @@ fn extract_search_tokens(query: &str) -> Vec<String> {
         "what", "when", "where", "who", "why", "you",
     ];
 
+    let normalized_query = query.to_lowercase();
+
     let mut seen = std::collections::HashSet::new();
-    query
+    let mut tokens = normalized_query
         .to_lowercase()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c.is_whitespace() { c } else { ' ' })
@@ -197,7 +217,19 @@ fn extract_search_tokens(query: &str) -> Vec<String> {
         .filter(|token| !STOP_WORDS.contains(token))
         .filter(|token| seen.insert((*token).to_string()))
         .map(|token| token.to_string())
-        .collect()
+        .collect::<Vec<_>>();
+
+    // Temporal expansion: "start of the week" should match Monday memories.
+    if (normalized_query.contains("start of the week")
+        || normalized_query.contains("start of week")
+        || normalized_query.contains("beginning of the week")
+        || normalized_query.contains("beginning of week"))
+        && seen.insert("monday".to_string())
+    {
+        tokens.push("monday".to_string());
+    }
+
+    tokens
 }
 
 fn overlap_score(content: &str, query_tokens: &[String]) -> usize {
@@ -211,6 +243,85 @@ fn overlap_score(content: &str, query_tokens: &[String]) -> usize {
         .iter()
         .filter(|token| normalized.contains(token.as_str()))
         .count()
+}
+
+fn find_near_duplicate_memory(
+    conn: &Connection,
+    user_id: &str,
+    incoming: &str,
+    threshold: f64,
+) -> Result<Option<String>, String> {
+    let normalized_incoming = normalize_for_similarity(incoming);
+    if normalized_incoming.is_empty() {
+        return Ok(None);
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT CAST(id AS TEXT), content
+             FROM memories
+             WHERE user_id = ?1 AND content IS NOT NULL
+             ORDER BY created_at DESC
+             LIMIT 300",
+        )
+        .map_err(|e| format!("Failed to prepare duplicate search statement: {}", e))?;
+
+    let mut rows = stmt
+        .query(params![user_id])
+        .map_err(|e| format!("Failed to query duplicate search rows: {}", e))?;
+
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| format!("Failed to iterate duplicate search rows: {}", e))?
+    {
+        let id: String = row.get(0).map_err(|e| format!("Failed to read memory id: {}", e))?;
+        let content: String = row
+            .get(1)
+            .map_err(|e| format!("Failed to read memory content: {}", e))?;
+        let similarity = text_similarity(&normalized_incoming, &normalize_for_similarity(&content));
+        if similarity >= threshold {
+            return Ok(Some(id));
+        }
+    }
+
+    Ok(None)
+}
+
+fn normalize_for_similarity(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c.is_whitespace() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn text_similarity(left: &str, right: &str) -> f64 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    if left == right {
+        return 1.0;
+    }
+
+    let left_tokens = left.split_whitespace().collect::<std::collections::HashSet<_>>();
+    let right_tokens = right
+        .split_whitespace()
+        .collect::<std::collections::HashSet<_>>();
+
+    if left_tokens.is_empty() || right_tokens.is_empty() {
+        return 0.0;
+    }
+
+    let intersection = left_tokens.intersection(&right_tokens).count() as f64;
+    let union = left_tokens.union(&right_tokens).count() as f64;
+    if union == 0.0 {
+        0.0
+    } else {
+        intersection / union
+    }
 }
 
 pub fn delete_memory(conn: &Connection, user_id: &str, memory_id: &str) -> Result<(), String> {

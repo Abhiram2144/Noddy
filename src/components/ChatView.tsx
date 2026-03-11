@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
 import { Send, Bot, User, Sparkles } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
@@ -9,6 +10,7 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
+  reminderId?: string;
 }
 
 interface PersistedMessage {
@@ -18,11 +20,27 @@ interface PersistedMessage {
   created_at: number;
 }
 
+interface Suggestion {
+  id: string;
+  user_id: string;
+  message: string;
+  action_intent?: string;
+  parameters?: Record<string, unknown>;
+  priority: number;
+  timestamp: number;
+}
+
+interface ActionResponse {
+  success: boolean;
+  message: string;
+}
+
 export function ChatView() {
   const { getAccessToken } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -62,6 +80,49 @@ export function ChatView() {
   // Focus input on mount
   useEffect(() => {
     inputRef.current?.focus();
+  }, []);
+
+  // Inject reminder alerts into chat when they fire
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ id: string; content: string; user_id: string }>(
+      "reminder_fired",
+      (event) => {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `reminder-${Date.now()}`,
+            role: "assistant" as const,
+            content: `⏰ Reminder: ${event.payload.content}`,
+            timestamp: new Date(),
+            reminderId: event.payload.id,
+          },
+        ]);
+      }
+    ).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  // Listen for proactive suggestion events.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<Suggestion>("suggestion_generated", (event) => {
+      setSuggestions((prev) => {
+        const next = [event.payload, ...prev.filter((s) => s.id !== event.payload.id)];
+        next.sort((a, b) => b.priority - a.priority);
+        return next.slice(0, 4);
+      });
+    }).then((fn) => {
+      unlisten = fn;
+    });
+
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
   const handleSendMessage = async () => {
@@ -118,6 +179,68 @@ export function ChatView() {
     }
   };
 
+  const handleReminderDone = async (reminderId: string) => {
+    try {
+      const accessToken = await getAccessToken();
+      await invoke<string>("finish_reminder", { accessToken, reminderId });
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.reminderId === reminderId
+            ? { ...message, content: `${message.content}\nDone.` }
+            : message
+        )
+      );
+    } catch (error) {
+      console.error("Failed to finish reminder:", error);
+    }
+  };
+
+  const handleReminderSnooze = async (reminderId: string, snoozeMinutes: number) => {
+    try {
+      const accessToken = await getAccessToken();
+      await invoke<string>("snooze_reminder", { accessToken, reminderId, snoozeMinutes });
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.reminderId === reminderId
+            ? { ...message, content: `${message.content}\nSnoozed ${snoozeMinutes} min.` }
+            : message
+        )
+      );
+    } catch (error) {
+      console.error("Failed to snooze reminder:", error);
+    }
+  };
+
+  const handleExecuteSuggestion = async (suggestion: Suggestion) => {
+    if (!suggestion.action_intent) {
+      return;
+    }
+
+    try {
+      const accessToken = await getAccessToken();
+      const intentJson = JSON.stringify({
+        name: suggestion.action_intent,
+        payload: suggestion.parameters ?? {},
+      });
+
+      const result = await invoke<ActionResponse>("execute_action", {
+        intentJson,
+        accessToken,
+      });
+
+      const assistantMessage: Message = {
+        id: `suggestion-exec-${Date.now()}`,
+        role: "assistant",
+        content: result.message,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+      setSuggestions((prev) => prev.filter((s) => s.id !== suggestion.id));
+    } catch (error) {
+      console.error("Failed to execute suggestion:", error);
+    }
+  };
+
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -150,6 +273,49 @@ export function ChatView() {
 
       {/* Messages Area */}
       <div style={{ flex: 1, overflowY: "auto", padding: "24px", display: "flex", flexDirection: "column", gap: "16px" }}>
+        {suggestions.length > 0 && (
+          <div
+            style={{
+              border: "1px solid var(--border-medium)",
+              borderRadius: "12px",
+              background: "var(--bg-elevated)",
+              padding: "12px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "8px",
+            }}
+          >
+            <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)", fontWeight: 600 }}>
+              Suggestions
+            </p>
+            {suggestions.map((s) => (
+              <div
+                key={s.id}
+                style={{
+                  border: "1px solid var(--border-subtle)",
+                  borderRadius: "10px",
+                  padding: "10px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: "10px",
+                }}
+              >
+                <span style={{ fontSize: "13px", color: "var(--text-primary)" }}>{s.message}</span>
+                {s.action_intent && (
+                  <button
+                    onClick={() => handleExecuteSuggestion(s)}
+                    className="btn btn-primary"
+                    style={{ padding: "6px 10px", fontSize: "12px" }}
+                  >
+                    Do it
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         {messages.length === 0 && (
           <motion.div
             className="empty-state"
@@ -225,6 +391,38 @@ export function ChatView() {
                     minute: "2-digit",
                   })}
                 </p>
+                {message.reminderId && (
+                  <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
+                    <button
+                      onClick={() => handleReminderSnooze(message.reminderId!, 10)}
+                      style={{
+                        border: "1px solid var(--border-medium)",
+                        borderRadius: "8px",
+                        padding: "4px 10px",
+                        fontSize: "12px",
+                        background: "transparent",
+                        color: "var(--text-primary)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      Snooze 10m
+                    </button>
+                    <button
+                      onClick={() => handleReminderDone(message.reminderId!)}
+                      style={{
+                        border: "1px solid var(--border-medium)",
+                        borderRadius: "8px",
+                        padding: "4px 10px",
+                        fontSize: "12px",
+                        background: "transparent",
+                        color: "var(--text-primary)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      Done
+                    </button>
+                  </div>
+                )}
               </div>
 
               {message.role === "user" && (

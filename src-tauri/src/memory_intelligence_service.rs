@@ -329,9 +329,9 @@ fn compute_importance(created_at: i64, access_count: i64, connection_count: usiz
 }
 
 fn compute_recency_score(created_at: i64, now: i64) -> f64 {
-    let age_seconds = (now - created_at).max(0) as f64;
-    let half_life_days = 14.0;
-    (-age_seconds / (60.0 * 60.0 * 24.0 * half_life_days)).exp()
+    let age_days = ((now - created_at).max(0) as f64) / 86_400.0;
+    let lambda = 0.08_f64;
+    (-lambda * age_days).exp()
 }
 
 fn tokenize(content: &str) -> HashSet<String> {

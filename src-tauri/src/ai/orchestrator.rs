@@ -2,7 +2,8 @@ use chrono::Local;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{intent_router, llm_client, prompt_templates};
+use super::{llm_client, prompt_templates};
+use super::planner::{action_plan::ActionStep, action_plan_parser, plan_executor};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct StructuredIntent {
@@ -25,24 +26,100 @@ pub async fn process_user_command(
 ) -> Result<String, String> {
     let history_text = {
         let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-        let items = crate::chat_history_store::get_messages(&conn, user_id, 3).unwrap_or_default();
+        let items = crate::chat_history_store::get_messages(&conn, user_id, 6).unwrap_or_default();
         items.iter()
             .map(|m| format!("{}: {}", m.role, m.content))
             .collect::<Vec<_>>()
             .join("\n")
     };
 
-    let prompt = prompt_templates::build_intent_prompt(&message, &history_text);
-    let raw_response = llm_client::generate_structured_response(prompt).await?;
-    let mut structured_intent = parse_structured_intent(&raw_response)?;
-    disambiguate_intent(&message, &mut structured_intent);
+    let runtime_context = super::context_builder::build_runtime_context(memory_store, user_id);
+    let planning_prompt = prompt_templates::build_action_planning_prompt(&message, &history_text, &runtime_context);
+    let raw_plan = llm_client::request_action_plan(planning_prompt).await?;
+    let mut plan = match action_plan_parser::parse_and_validate_action_plan(&raw_plan) {
+        Ok(plan) => plan,
+        Err(_) => {
+            return execute_legacy_single_intent(
+                &message,
+                user_id,
+                app_handle,
+                registry,
+                memory_store,
+                plugin_registry,
+                event_bus,
+                permissions,
+                &runtime_context,
+                &history_text,
+            )
+            .await;
+        }
+    };
 
-    if structured_intent.intent == "set_reminder" {
-        normalize_reminder_parameters_with_llm(&message, &mut structured_intent).await;
+    // Keep correction behavior deterministic and backward compatible.
+    if let Some(correction_params) = super::context_builder::detect_correction_parameters(&message) {
+        plan.actions = vec![ActionStep {
+            intent: "update_memory".to_string(),
+            parameters: correction_params,
+            requires_confirmation: false,
+        }];
     }
 
-    intent_router::route_intent(
+    // Preserve reminder normalization behavior per reminder step.
+    for step in &mut plan.actions {
+        if step.intent == "set_reminder" {
+            let mut normalized = StructuredIntent {
+                intent: step.intent.clone(),
+                parameters: step.parameters.clone(),
+                confidence: 1.0,
+            };
+            normalize_reminder_parameters_with_llm(&message, &mut normalized).await;
+            step.parameters = normalized.parameters;
+        }
+    }
+
+    plan_executor::execute_action_plan(
         &message,
+        plan,
+        user_id,
+        app_handle,
+        registry,
+        memory_store,
+        plugin_registry,
+        event_bus,
+        permissions,
+    )
+    .await
+}
+
+async fn execute_legacy_single_intent(
+    message: &str,
+    user_id: &str,
+    app_handle: &tauri::AppHandle,
+    registry: &crate::AppRegistry,
+    memory_store: &crate::MemoryStore,
+    plugin_registry: &crate::plugin_registry::PluginRegistry,
+    event_bus: &crate::EventBus,
+    permissions: &crate::PermissionManager,
+    runtime_context: &str,
+    history_text: &str,
+) -> Result<String, String> {
+    let prompt = prompt_templates::build_intent_prompt(message, history_text, runtime_context);
+    let raw_response = llm_client::generate_structured_response(prompt).await?;
+    let mut structured_intent = parse_structured_intent(&raw_response)?;
+    disambiguate_intent(message, &mut structured_intent);
+
+    if let Some(correction_params) = super::context_builder::detect_correction_parameters(message) {
+        structured_intent.intent = "update_memory".to_string();
+        structured_intent.parameters = correction_params;
+        structured_intent.confidence = structured_intent.confidence.max(0.85);
+    }
+
+    if structured_intent.intent == "set_reminder" {
+        normalize_reminder_parameters_with_llm(message, &mut structured_intent).await;
+    }
+
+    super::intent_router::route_intent(
+        message,
         structured_intent,
         user_id,
         app_handle,

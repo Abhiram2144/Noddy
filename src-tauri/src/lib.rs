@@ -27,6 +27,12 @@ mod auth_service;
 mod command_history_repository;
 mod command_history_service;
 
+// Modular system awareness layer
+mod system;
+
+// Proactive suggestion engine layer
+mod suggestions;
+
 // AI module for LLM chat integration
 mod ai;
 
@@ -96,8 +102,11 @@ enum Event {
     IntentReceived(String),                          // intent_json
     IntentExecuted { intent_name: String, duration_ms: u128 }, // intent name and execution time
     MemorySaved(String),                             // content
+    MemoryUpdated(String),                           // memory_id
+    MemoryDeleted(String),                           // memory_id
     ReminderScheduled(String),                       // reminder_json
     ReminderTriggered(String),                       // reminder_content
+    SuggestionGenerated(crate::suggestions::suggestion_types::Suggestion),
     TaskCompleted { task_id: String, task_type: String },
     ErrorOccurred(String),                           // error_message
 }
@@ -229,6 +238,16 @@ impl TelemetryEvent {
                 m.insert("size_bytes".to_string(), content.len().to_string());
                 ("MemorySaved".to_string(), m)
             }
+            Event::MemoryUpdated(memory_id) => {
+                let mut m = HashMap::new();
+                m.insert("memory_id".to_string(), memory_id.clone());
+                ("MemoryUpdated".to_string(), m)
+            }
+            Event::MemoryDeleted(memory_id) => {
+                let mut m = HashMap::new();
+                m.insert("memory_id".to_string(), memory_id.clone());
+                ("MemoryDeleted".to_string(), m)
+            }
             Event::ReminderScheduled(json) => {
                 let mut m = HashMap::new();
                 m.insert("reminder_json".to_string(), json.clone());
@@ -244,6 +263,13 @@ impl TelemetryEvent {
                     }
                 );
                 ("ReminderTriggered".to_string(), m)
+            }
+            Event::SuggestionGenerated(suggestion) => {
+                let mut m = HashMap::new();
+                m.insert("suggestion_id".to_string(), suggestion.id.clone());
+                m.insert("priority".to_string(), suggestion.priority.to_string());
+                m.insert("has_action".to_string(), suggestion.action_intent.is_some().to_string());
+                ("SuggestionGenerated".to_string(), m)
             }
             Event::TaskCompleted { task_id, task_type } => {
                 let mut m = HashMap::new();
@@ -1586,6 +1612,8 @@ async fn execute_action(
             let result = ai::tool_executor::execute_ai_query(
                 &serde_json::json!({ "query": query }),
                 &query,
+                &user_id,
+                &memory_store,
             ).await;
             
             match result {

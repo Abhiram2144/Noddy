@@ -2,6 +2,21 @@ use serde_json::Value;
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Weekday};
 use tauri::Emitter;
 
+fn parse_json_array(raw: &str) -> Option<Vec<Value>> {
+    // Try direct parse first
+    if let Ok(arr) = serde_json::from_str::<Vec<Value>>(raw.trim()) {
+        return Some(arr);
+    }
+    // Strip markdown code fences that LLMs sometimes add
+    let stripped = raw
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+    serde_json::from_str::<Vec<Value>>(stripped).ok()
+}
+
 pub fn execute_set_reminder(
     parameters: &Value,
     user_message: &str,
@@ -68,7 +83,7 @@ pub fn execute_set_reminder(
     Ok(format!("Reminder scheduled for {}.", trigger_at))
 }
 
-pub fn execute_save_memory(
+pub async fn execute_save_memory(
     parameters: &Value,
     user_id: &str,
     memory_store: &crate::MemoryStore,
@@ -78,10 +93,126 @@ pub fn execute_save_memory(
     permissions.check_permission(crate::Capability::MemoryWrite)?;
 
     let content = string_param(parameters, &["content", "memory", "text"])?;
+
+    // Bulk schedule paste path (e.g. "Mon: Big Data 10am, OS 2pm").
+    let bulk_entries = super::schedule_parser::parse_bulk_schedule_input(content);
+    if !bulk_entries.is_empty() {
+        let labels = save_schedule_entries(memory_store, user_id, event_bus, &bulk_entries)?;
+        return Ok(format!("Got it, saved to memory: {}.", labels.join("; ")));
+    }
+
+    // If the content looks like a class schedule, parse it into structured memory entries
+    if looks_like_schedule(content) {
+        let parse_prompt = super::prompt_templates::build_timetable_parser_prompt(content);
+        if let Ok(raw) = super::llm_client::generate_structured_response(parse_prompt).await {
+            if let Some(parsed) = parse_json_array(&raw) {
+                if !parsed.is_empty() {
+                    let mut labels = Vec::new();
+                    for entry in &parsed {
+                        let day = entry.get("day").and_then(Value::as_str).unwrap_or("").to_lowercase();
+                        let subject = match entry.get("subject").and_then(Value::as_str) {
+                            Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+                            _ => continue,
+                        };
+                        let time = entry.get("time").and_then(Value::as_str).unwrap_or("").to_string();
+
+                        let memory_text = match (day.is_empty(), time.is_empty()) {
+                            (false, false) => format!("class of {} at {} on {}", subject, time, day),
+                            (false, true)  => format!("class of {} on {}", subject, day),
+                            (true,  false) => format!("class of {} at {}", subject, time),
+                            (true,  true)  => format!("class of {}", subject),
+                        };
+
+                        crate::save_memory(memory_store, user_id, &memory_text)?;
+                        event_bus.emit(&crate::Event::MemorySaved(memory_text));
+
+                        let label = match (day.is_empty(), time.is_empty()) {
+                            (false, false) => format!("{} on {} at {}", subject, day, time),
+                            (false, true)  => format!("{} on {}", subject, day),
+                            (true,  false) => format!("{} at {}", subject, time),
+                            (true,  true)  => subject.clone(),
+                        };
+                        labels.push(label);
+                    }
+                    if !labels.is_empty() {
+                        return Ok(format!("Got it, saved to memory: {}.", labels.join("; ")));
+                    }
+                }
+            }
+        }
+        // Fallthrough: save as plain memory if parsing failed
+    }
+
     crate::save_memory(memory_store, user_id, content)?;
     event_bus.emit(&crate::Event::MemorySaved(content.to_string()));
+    Ok("Got it, I'll remember that.".to_string())
+}
 
-    Ok("Memory saved.".to_string())
+pub fn execute_update_memory(
+    parameters: &Value,
+    user_id: &str,
+    memory_store: &crate::MemoryStore,
+    event_bus: &crate::EventBus,
+    permissions: &crate::PermissionManager,
+) -> Result<String, String> {
+    permissions.check_permission(crate::Capability::MemoryWrite)?;
+
+    let query = first_nonempty_string_param(parameters, &["query", "keyword", "target", "old_content"])
+        .unwrap_or("class");
+
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let matches = crate::memory_store::search_memories(&conn, user_id, query.to_string(), 5)?;
+    let target = matches
+        .first()
+        .ok_or_else(|| format!("I couldn't find a memory to update for '{}'.", query))?;
+
+    let new_content = if let Some(explicit) = first_nonempty_string_param(
+        parameters,
+        &["new_content", "content", "replacement", "value"],
+    ) {
+        explicit.to_string()
+    } else if let Some(new_time) = first_nonempty_string_param(parameters, &["new_time", "time"]) {
+        apply_time_correction(&target.content, new_time)
+    } else {
+        return Err("Update intent requires new_content or new_time".to_string());
+    };
+
+    crate::memory_store::update_memory_content(&conn, user_id, &target.id, &new_content)?;
+    crate::memory_intelligence_service::link_related_memories(&conn, user_id, &target.id)?;
+    crate::memory_intelligence_service::calculate_memory_importance(&conn, user_id, &target.id)?;
+
+    event_bus.emit(&crate::Event::MemoryUpdated(target.id.clone()));
+    Ok(format!("Updated memory: {}", new_content))
+}
+
+pub fn execute_delete_memory(
+    parameters: &Value,
+    user_id: &str,
+    memory_store: &crate::MemoryStore,
+    event_bus: &crate::EventBus,
+    permissions: &crate::PermissionManager,
+) -> Result<String, String> {
+    permissions.check_permission(crate::Capability::MemoryWrite)?;
+
+    let query = string_param(parameters, &["query", "keyword", "target", "memory"])?;
+    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let matches = crate::memory_store::search_memories(&conn, user_id, query.to_string(), 5)?;
+    let target = matches
+        .first()
+        .ok_or_else(|| format!("I couldn't find a memory to forget for '{}'.", query))?;
+
+    crate::memory_store::delete_memory(&conn, user_id, &target.id)?;
+    event_bus.emit(&crate::Event::MemoryDeleted(target.id.clone()));
+    Ok("Done. I forgot that memory.".to_string())
+}
+
+fn looks_like_schedule(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let has_weekday = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+        .iter().any(|d| lower.contains(d));
+    let has_class_word = ["class", "lecture", "attend", "have ", "subject", "course", "lab"]
+        .iter().any(|w| lower.contains(w));
+    has_weekday && has_class_word
 }
 
 pub fn execute_search_memory(
@@ -101,10 +232,231 @@ pub fn execute_search_memory(
     });
 
     if results.is_empty() {
-        Ok(format!("No memories found for '{}'.", query))
+        Ok(format!("I couldn't find anything in your memories about {}.", query))
     } else {
-        Ok(format!("Found memories: {}", results.join(" | ")))
+        Ok(build_memory_search_answer(query, &results))
     }
+}
+
+fn build_memory_search_answer(query: &str, results: &[String]) -> String {
+    let normalized_query = normalize_text(query);
+    let asks_about_class_schedule =
+        contains_any(&normalized_query, &["class", "timetable", "schedule", "week", "tomorrow"]);
+
+    if asks_about_class_schedule {
+        let temporal_focus = detect_temporal_focus(&normalized_query);
+        let all_entries = collect_class_entries(results);
+        let focused_entries = filter_entries_by_focus(&all_entries, temporal_focus);
+
+        if !focused_entries.is_empty() {
+            return format_schedule_answer(temporal_focus, &focused_entries);
+        }
+
+        if temporal_focus != TemporalFocus::Any {
+            return match temporal_focus {
+                TemporalFocus::WeekStartMonday => {
+                    "I found class memories, but none clearly scheduled for Monday.".to_string()
+                }
+                TemporalFocus::Tomorrow => {
+                    "I found class memories, but none clearly marked for tomorrow.".to_string()
+                }
+                TemporalFocus::Any => "I found class memories, but couldn't resolve the exact schedule.".to_string(),
+            };
+        }
+
+        if let Some(first) = all_entries.first() {
+            if let Some(time) = &first.time {
+                return format!("You have {} at {}.", first.subject, time);
+            }
+            return format!("You have {}.", first.subject);
+        }
+    }
+
+    if results.len() == 1 {
+        return format!("From your memory: {}", results[0]);
+    }
+
+    format!(
+        "Based on your memories: {}",
+        results
+            .iter()
+            .take(2)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(". ")
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TemporalFocus {
+    Any,
+    Tomorrow,
+    WeekStartMonday,
+}
+
+#[derive(Clone)]
+struct ClassEntry {
+    subject: String,
+    time: Option<String>,
+    day: Option<String>,
+}
+
+fn detect_temporal_focus(normalized_query: &str) -> TemporalFocus {
+    if normalized_query.contains("start of the week")
+        || normalized_query.contains("start of week")
+        || normalized_query.contains("beginning of the week")
+        || normalized_query.contains("beginning of week")
+        || normalized_query.contains("monday")
+    {
+        TemporalFocus::WeekStartMonday
+    } else if normalized_query.contains("tomorrow") {
+        TemporalFocus::Tomorrow
+    } else {
+        TemporalFocus::Any
+    }
+}
+
+fn collect_class_entries(memories: &[String]) -> Vec<ClassEntry> {
+    let mut entries = Vec::new();
+
+    for memory in memories {
+        let lower = memory.to_lowercase();
+        let day = extract_weekday(&lower);
+        let marker = "class of ";
+        let mut start_idx = 0usize;
+
+        while let Some(relative_idx) = lower[start_idx..].find(marker) {
+            let subject_start = start_idx + relative_idx + marker.len();
+            let subject_tail = &memory[subject_start..];
+            let subject_tail_lower = &lower[subject_start..];
+
+            let subject_end = subject_tail_lower
+                .find(" at ")
+                .or_else(|| subject_tail_lower.find(","))
+                .or_else(|| subject_tail_lower.find("."))
+                .unwrap_or(subject_tail.len());
+
+            let subject = subject_tail[..subject_end]
+                .trim()
+                .trim_matches(|c: char| c == ',' || c == '.')
+                .to_string();
+
+            let time = subject_tail_lower
+                .find(" at ")
+                .and_then(|idx| extract_time_phrase(&subject_tail[idx + 4..]));
+
+            if !subject.is_empty() {
+                entries.push(ClassEntry {
+                    subject,
+                    time,
+                    day: day.clone(),
+                });
+            }
+
+            start_idx = subject_start;
+        }
+    }
+
+    entries
+}
+
+fn filter_entries_by_focus(entries: &[ClassEntry], focus: TemporalFocus) -> Vec<ClassEntry> {
+    match focus {
+        TemporalFocus::Any => entries.to_vec(),
+        TemporalFocus::Tomorrow => entries
+            .iter()
+            .filter(|entry| entry.day.is_none())
+            .cloned()
+            .collect(),
+        TemporalFocus::WeekStartMonday => entries
+            .iter()
+            .filter(|entry| entry.day.as_deref() == Some("monday"))
+            .cloned()
+            .collect(),
+    }
+}
+
+fn format_schedule_answer(focus: TemporalFocus, entries: &[ClassEntry]) -> String {
+    let mut parts = Vec::new();
+    for entry in entries.iter().take(3) {
+        match &entry.time {
+            Some(time) => parts.push(format!("{} at {}", entry.subject, time)),
+            None => parts.push(entry.subject.clone()),
+        }
+    }
+
+    if parts.is_empty() {
+        return "I found your class memories, but couldn't build a clean schedule answer.".to_string();
+    }
+
+    let joined = if parts.len() == 1 {
+        parts[0].clone()
+    } else {
+        format!("{}; then {}", parts[0], parts[1..].join("; then "))
+    };
+
+    match focus {
+        TemporalFocus::WeekStartMonday => format!("At the start of the week, you have {}.", joined),
+        TemporalFocus::Tomorrow => format!("Tomorrow you have {}.", joined),
+        TemporalFocus::Any => format!("You have {}.", joined),
+    }
+}
+
+fn extract_weekday(text: &str) -> Option<String> {
+    [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+    ]
+    .iter()
+    .find(|day| text.contains(**day))
+    .map(|day| (*day).to_string())
+}
+
+fn normalize_text(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c.is_whitespace() { c } else { ' ' })
+        .collect::<String>()
+}
+
+fn contains_any(text: &str, terms: &[&str]) -> bool {
+    terms.iter().any(|term| text.contains(term))
+}
+
+fn extract_time_phrase(text: &str) -> Option<String> {
+    let raw_tokens = text.split_whitespace().collect::<Vec<_>>();
+    for (idx, token) in raw_tokens.iter().enumerate() {
+        let cleaned = token
+            .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+            .to_lowercase();
+        if cleaned.ends_with("am") || cleaned.ends_with("pm") {
+            let spaced = cleaned
+                .replace("am", " AM")
+                .replace("pm", " PM")
+                .trim()
+                .to_string();
+            if !spaced.is_empty() {
+                return Some(spaced);
+            }
+        }
+
+        if idx + 1 < raw_tokens.len() {
+            let next = raw_tokens[idx + 1]
+                .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+                .to_lowercase();
+            if (next == "am" || next == "pm") && cleaned.chars().all(|c| c.is_ascii_digit()) {
+                return Some(format!("{} {}", cleaned, next.to_uppercase()));
+            }
+        }
+    }
+
+    None
 }
 
 pub fn execute_open_app(
@@ -182,6 +534,8 @@ pub fn execute_plugin_action(
 pub async fn execute_ai_query(
     parameters: &Value,
     user_message: &str,
+    user_id: &str,
+    memory_store: &crate::MemoryStore,
 ) -> Result<String, String> {
     let query = parameters
         .get("query")
@@ -192,15 +546,82 @@ pub async fn execute_ai_query(
         return Ok("I'm not sure what you're asking about.".to_string());
     }
 
-    let prompt = super::prompt_templates::build_ai_assistant_query_prompt(query);
+    let runtime_context = super::context_builder::build_runtime_context(memory_store, user_id);
+    let semantic_keywords = super::context_builder::extract_semantic_keywords(query).await;
+
+    // Fetch relevant personal context to ground the answer.
+    let mut seen = std::collections::HashSet::new();
+    let mut memories = Vec::new();
+
+    for keyword in semantic_keywords.iter().take(6) {
+        for memory in crate::search_memories(memory_store, user_id, keyword).unwrap_or_default() {
+            if seen.insert(memory.clone()) {
+                memories.push(memory);
+            }
+            if memories.len() >= 8 {
+                break;
+            }
+        }
+        if memories.len() >= 8 {
+            break;
+        }
+    }
+
+    if memories.is_empty() {
+        memories = crate::search_memories(memory_store, user_id, query).unwrap_or_default();
+    }
+
+    let prompt = if memories.is_empty() {
+        super::prompt_templates::build_ai_assistant_query_prompt(query, &runtime_context)
+    } else {
+        super::prompt_templates::build_ai_assistant_query_with_context_prompt(
+            query,
+            &memories,
+            &runtime_context,
+        )
+    };
 
     let answer = super::llm_client::generate_structured_response(prompt).await?;
     Ok(answer)
 }
 
+fn save_schedule_entries(
+    memory_store: &crate::MemoryStore,
+    user_id: &str,
+    event_bus: &crate::EventBus,
+    entries: &[super::schedule_parser::ScheduleEntry],
+) -> Result<Vec<String>, String> {
+    let mut labels = Vec::new();
 
-fn first_nonempty_string_param<'a>(parameters: &'a Value, keys: &[&str]) -> Option<&'a str> {
-    keys.iter()
+    for entry in entries {
+        let memory_text = format!("class of {} at {} on {}", entry.subject, entry.time, entry.day);
+        crate::save_memory(memory_store, user_id, &memory_text)?;
+        event_bus.emit(&crate::Event::MemorySaved(memory_text));
+        labels.push(format!("{} on {} at {}", entry.subject, entry.day, entry.time));
+    }
+
+    Ok(labels)
+}
+
+fn apply_time_correction(existing: &str, new_time: &str) -> String {
+    let lower = existing.to_lowercase();
+    if let Some(idx) = lower.find(" at ") {
+        let prefix = &existing[..idx + 4];
+        let suffix = &existing[idx + 4..];
+        let day_idx = suffix.to_lowercase().find(" on ");
+        if let Some(on_idx) = day_idx {
+            let after_day = &suffix[on_idx..];
+            return format!("{}{}{}", prefix, new_time.trim(), after_day);
+        }
+        return format!("{}{}", prefix, new_time.trim());
+    }
+
+    format!("{} at {}", existing.trim(), new_time.trim())
+}
+
+
+
+fn first_nonempty_string_param<'a>(parameters: &'a Value, keys: &[&str]) -> Option<&'a str> {    keys.iter()
         .find_map(|key| parameters.get(*key).and_then(Value::as_str))
         .map(str::trim)
         .filter(|value| !value.is_empty())

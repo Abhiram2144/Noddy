@@ -44,6 +44,18 @@ pub fn fetch_recent_history(
     command_history_repository::get_recent_commands(conn, user_id, limit)
 }
 
+pub fn get_recent_commands(
+    conn: &Connection,
+    user_id: &str,
+    limit: i32,
+) -> Result<Vec<String>, String> {
+    let records = command_history_repository::get_recent_commands(conn, user_id, limit)?;
+    Ok(records
+        .into_iter()
+        .map(|record| record.command_text)
+        .collect())
+}
+
 /// Calculate aggregated metrics for a user's command history.
 ///
 /// Returns a JSON value with total/success/failure counts, average duration,

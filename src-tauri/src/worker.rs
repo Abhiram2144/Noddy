@@ -24,6 +24,14 @@ pub fn start_worker_loop(db_path: PathBuf, event_bus: EventBus, app_handle: AppH
                 eprintln!("⚠️  Worker execution failed: {}", error);
             }
 
+            if let Err(error) = crate::suggestions::suggestion_worker::maybe_run_suggestion_cycle(
+                &conn,
+                &event_bus,
+                Some(&app_handle),
+            ) {
+                eprintln!("⚠️  Suggestion worker failed: {}", error);
+            }
+
             std::thread::sleep(WORKER_LOOP_INTERVAL);
         }
     });
