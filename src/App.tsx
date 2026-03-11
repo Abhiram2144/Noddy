@@ -28,6 +28,8 @@ import "./App.css";
 import { MemoryListView } from "./components/MemoryListView";
 import { MemoryGraphView } from "./components/MemoryGraphView";
 import { CommandHistoryView } from "./components/CommandHistoryView";
+import { OnboardingWizard } from "./components/OnboardingWizard";
+import { SettingsPage } from "./components/SettingsPage";
 import { ChatView } from "./components/ChatView";
 import { LoginPage } from "./components/LoginPage";
 import { SignupPage } from "./components/SignupPage";
@@ -223,11 +225,31 @@ function App() {
   const [pendingReminderNavigation, setPendingReminderNavigation] = useState(false);
   const [activeReminderAction, setActiveReminderAction] = useState<{ id: number; content: string } | null>(null);
   const [isActionProcessing, setIsActionProcessing] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [currentAccessToken, setCurrentAccessToken] = useState("");
+  const [appSettings, setAppSettings] = useState<{ first_run: boolean; onboarding_completed: boolean; theme: string; suggestions_enabled: boolean; auto_start: boolean } | null>(null);
 
   const invokeAuthed = async <T,>(command: string, payload: Record<string, unknown> = {}): Promise<T> => {
     const accessToken = await getAccessToken();
     return invoke<T>(command, { ...payload, accessToken });
   };
+
+  // Check settings on login to decide if onboarding should be shown
+  useEffect(() => {
+    if (!user) return;
+    getAccessToken()
+      .then((token) => {
+        setCurrentAccessToken(token);
+        return invoke<{ first_run: boolean; onboarding_completed: boolean; theme: string; suggestions_enabled: boolean; auto_start: boolean }>("get_settings");
+      })
+      .then((s) => {
+        setAppSettings(s);
+        if (s.first_run || !s.onboarding_completed) {
+          setShowOnboarding(true);
+        }
+      })
+      .catch(console.error);
+  }, [user]);
 
   // Fetch dashboard data on component mount
   useEffect(() => {
@@ -453,7 +475,12 @@ function App() {
             <IntegrationsView key="integrations" integrations={integrations} setIntegrations={setIntegrations} invokeAuthed={invokeAuthed} />
           )}
           {currentView === "settings" && (
-            <SettingsView key="settings" />
+            <SettingsPage
+              key="settings"
+              onNavigate={setCurrentView}
+              accessToken={currentAccessToken}
+              onRestartOnboarding={() => setShowOnboarding(true)}
+            />
           )}
         </AnimatePresence>
       </main>
@@ -504,6 +531,26 @@ function App() {
               </button>
             </div>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ONBOARDING WIZARD OVERLAY */}
+      <AnimatePresence>
+        {showOnboarding && appSettings && (
+          <OnboardingWizard
+            settings={appSettings}
+            accessToken={currentAccessToken}
+            onComplete={() => {
+              setShowOnboarding(false);
+              setAppSettings((s) => s ? { ...s, first_run: false, onboarding_completed: true } : s);
+            }}
+            onSkip={() => {
+              invoke("update_settings", {
+                newSettings: { ...(appSettings ?? {}), first_run: false, onboarding_completed: true },
+              }).catch(console.error);
+              setShowOnboarding(false);
+            }}
+          />
         )}
       </AnimatePresence>
     </div>
@@ -1318,39 +1365,6 @@ function IntegrationsView({
           )}
         </motion.div>
       </div>
-    </motion.div>
-  );
-}
-
-// ============================================================================
-// SETTINGS VIEW
-// ============================================================================
-
-function SettingsView() {
-  return (
-    <motion.div
-      className="panel-container"
-      initial={{ opacity: 0, x: 40 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -40 }}
-      transition={{ duration: 0.4 }}
-    >
-      <div className="panel-header">
-        <h1 className="panel-title">Settings</h1>
-        <p className="panel-subtitle">Configure your assistant</p>
-      </div>
-
-      <motion.div
-        className="card"
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
-      >
-        <div className="empty-state">
-          <Settings className="empty-state-icon" />
-          <p>Settings panel coming soon</p>
-        </div>
-      </motion.div>
     </motion.div>
   );
 }

@@ -36,6 +36,10 @@ mod suggestions;
 // AI module for LLM chat integration
 mod ai;
 
+// Settings and permissions configuration
+mod settings_service;
+mod permissions_service;
+
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -2399,7 +2403,21 @@ pub fn run() {
             
             // Create app data directory if it doesn't exist
             std::fs::create_dir_all(&app_data_dir).ok();
-            
+
+            // Create config sub-directory for settings/permissions
+            let config_dir = app_data_dir.join("config");
+            std::fs::create_dir_all(&config_dir).ok();
+
+            // Create logs sub-directory
+            let logs_dir = app_data_dir.join("logs");
+            std::fs::create_dir_all(&logs_dir).ok();
+
+            // Load settings and permissions from disk (or create defaults)
+            let settings_state = settings_service::SettingsState::load(&config_dir);
+            let permissions_state = permissions_service::PermissionsState::load(&config_dir);
+
+            println!("✓ Settings loaded from: {}", config_dir.display());
+
             let db_path = app_data_dir.join("noddy.db");
             
             let conn = Connection::open(&db_path)
@@ -2453,6 +2471,8 @@ pub fn run() {
 
             app.manage(memory_store);
             app.manage(AuthConfig { jwt_secret });
+            app.manage(settings_state);
+            app.manage(permissions_state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2483,7 +2503,12 @@ pub fn run() {
             get_graph_data,
             get_memory_graph,
             get_chat_history,
-            chat_with_ai
+            chat_with_ai,
+            settings_service::get_settings,
+            settings_service::update_settings,
+            settings_service::get_app_data_path,
+            permissions_service::get_user_permissions,
+            permissions_service::update_user_permission
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
