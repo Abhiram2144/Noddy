@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, RotateCcw, ZoomIn, ZoomOut, X } from "lucide-react";
-import ForceGraph3D from "react-force-graph-3d";
+import ForceGraph2D from "react-force-graph-2d";
 import { useAuth } from "../auth/AuthContext";
 
 interface GraphNode {
@@ -115,10 +115,9 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
 
   const zoomCamera = (factor: number) => {
     if (!graphRef.current) return;
-    const current = graphRef.current.cameraPosition();
-    const nextZ = Math.max(70, Math.min(3500, current.z * factor));
-    graphRef.current.cameraPosition({ x: current.x, y: current.y, z: nextZ }, undefined, 300);
-    setZoom((z) => Math.max(0.2, Math.min(3, factor < 1 ? z + 0.15 : z - 0.15)));
+    const currentZoom = graphRef.current.zoom();
+    graphRef.current.zoom(currentZoom * factor, 300);
+    setZoom((z) => Math.max(0.2, Math.min(3, factor > 1 ? z + 0.15 : z - 0.15)));
   };
 
   const fetchGraphData = async () => {
@@ -162,20 +161,24 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
     }
   };
 
-  const filteredNodes = searchQuery.trim()
-    ? graphData.nodes.filter((n) =>
+  const filteredNodes = useMemo(() => {
+    return searchQuery.trim()
+      ? graphData.nodes.filter((n) =>
         n.label.toLowerCase().includes(searchQuery.toLowerCase()) ||
         n.content.toLowerCase().includes(searchQuery.toLowerCase())
       )
-    : graphData.nodes;
+      : graphData.nodes;
+  }, [graphData.nodes, searchQuery]);
 
-  const filteredEdges = searchQuery.trim()
-    ? graphData.edges.filter(
+  const filteredEdges = useMemo(() => {
+    return searchQuery.trim()
+      ? graphData.edges.filter(
         (e) =>
-          filteredNodes.some((n) => n.id === (typeof e.source === "string" ? e.source : e.source.id)) &&
-          filteredNodes.some((n) => n.id === (typeof e.target === "string" ? e.target : e.target.id))
+          filteredNodes.some((n) => n.id === (typeof e.source === "string" ? e.source : (e.source as any).id)) &&
+          filteredNodes.some((n) => n.id === (typeof e.target === "string" ? e.target : (e.target as any).id))
       )
-    : graphData.edges;
+      : graphData.edges;
+  }, [graphData.edges, filteredNodes, searchQuery]);
 
   // Spread nodes apart and keep visible links between them.
   useEffect(() => {
@@ -201,45 +204,23 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
     graph.d3ReheatSimulation();
   }, [isLoading, filteredNodes.length, filteredEdges.length]);
 
-  const displayNodes: GraphNode[] = (() => {
-    if (filteredNodes.length === 0) return [];
+  const displayNodes: GraphNode[] = useMemo(() => {
+    return filteredNodes;
+  }, [filteredNodes]);
 
-    // For small/medium graphs, seed positions so nodes don't overlap at origin.
-    if (filteredNodes.length <= 30) {
-      const radius = Math.max(120, filteredNodes.length * 20);
-      return filteredNodes.map((node, index) => {
-        const angle = (index / filteredNodes.length) * Math.PI * 2;
-        return {
-          ...node,
-          x: Math.cos(angle) * radius,
-          y: Math.sin(angle) * radius,
-          z: ((index % 6) - 2.5) * 20,
-        };
-      });
-    }
-
-    if (filteredEdges.length > 0) return filteredNodes;
-
-    // When there are no edges, seed a ring layout so nodes don't stack visually.
-    const radius = Math.max(180, filteredNodes.length * 18);
-    return filteredNodes.map((node, index) => {
-      const angle = (index / filteredNodes.length) * Math.PI * 2;
-      return {
-        ...node,
-        x: Math.cos(angle) * radius,
-        y: Math.sin(angle) * radius,
-        z: ((index % 4) - 1.5) * 30,
-      };
-    });
-  })();
+  const displayLinks = useMemo(() => {
+    return filteredEdges.map((e) => ({
+      source: typeof e.source === "string" ? e.source : (e.source as any).id,
+      target: typeof e.target === "string" ? e.target : (e.target as any).id,
+      value: e.weight,
+      relationship: e.relationship,
+    }));
+  }, [filteredEdges]);
 
   useEffect(() => {
-    if (!graphRef.current || isLoading || filteredNodes.length === 0) return;
-    const timer = window.setTimeout(() => {
-      graphRef.current.zoomToFit(400, 20);
-      setZoom(1);
-    }, 120);
-    return () => window.clearTimeout(timer);
+    // We intentionally removed the zoomToFit timeout here,
+    // as it can sometimes bug the react-force-graph-3d camera into NaN or extreme values.
+    // The force graph will naturally fall back to its internal viewport.
   }, [isLoading, filteredNodes.length]);
 
   const detectCategory = (node: GraphNode): MemoryCategory => {
@@ -326,10 +307,10 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
           className="btn btn-secondary"
-          title="Zoom in"
+          title="Zoom Out"
           style={{ padding: "12px" }}
         >
-          <ZoomIn style={{ width: "20px", height: "20px" }} />
+          <ZoomOut style={{ width: "20px", height: "20px" }} />
         </motion.button>
 
         <motion.button
@@ -337,10 +318,10 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
           className="btn btn-secondary"
-          title="Zoom out"
+          title="Zoom In"
           style={{ padding: "12px" }}
         >
-          <ZoomOut style={{ width: "20px", height: "20px" }} />
+          <ZoomIn style={{ width: "20px", height: "20px" }} />
         </motion.button>
       </motion.div>
 
@@ -378,43 +359,27 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
             <p>No memories in graph</p>
           </div>
         ) : (
-          <ForceGraph3D
+          <ForceGraph2D
             ref={graphRef}
             graphData={{
               nodes: displayNodes,
-              links: filteredEdges.map((e) => ({
-                source: typeof e.source === "string" ? e.source : e.source.id,
-                target: typeof e.target === "string" ? e.target : e.target.id,
-                value: e.weight,
-                relationship: e.relationship,
-              })),
+              links: displayLinks,
             }}
             nodeLabel={(n: any) => `${n.label}\nImportance: ${Math.round((n.importance || 0) * 100)}%\nCategory: ${labelForCategory(categoryForNode(n as GraphNode))}`}
             nodeColor={nodeColor}
             nodeVal={nodeSize}
-            nodeOpacity={1}
-            nodeRelSize={11}
-            nodeResolution={24}
+            nodeRelSize={6}
             linkColor={(link: any) =>
               link.relationship === "keyword_similarity" ? "#cbd5e1" : "#94a3b8"
             }
-            linkOpacity={0.98}
-            linkWidth={(link: any) => 2.2 + (link.value || 0) * 2.6}
+            linkWidth={(link: any) => 1.5 + (link.value || 0) * 2}
             onNodeClick={handleNodeClick}
             backgroundColor="#05070d"
             width={graphSize.width}
             height={graphSize.height}
             d3VelocityDecay={0.25}
-            numDimensions={3}
-            nodeVisibility={(n: any) => filteredNodes.some((fn) => fn.id === n.id)}
-            warmupTicks={100}
+            warmupTicks={10}
             cooldownTicks={300}
-            onEngineStop={() => {
-              if (graphRef.current) {
-                graphRef.current.zoomToFit(360, 30);
-                setZoom(1);
-              }
-            }}
             enableNodeDrag
           />
         )}
@@ -467,11 +432,12 @@ export function MemoryGraphView({ onSelectMemory }: MemoryGraphViewProps) {
               {Array.from(new Set(filteredNodes.map(categoryForNode))).map((category) => {
                 const color = colorForCategory(category);
                 return (
-                <div key={category} style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                  <div style={{ width: "12px", height: "12px", borderRadius: "50%", backgroundColor: color, boxShadow: `0 0 8px ${color}40` }} />
-                  <span style={{ fontSize: "13px", color: "var(--text-primary)", textTransform: "capitalize" }}>{labelForCategory(category)}</span>
-                </div>
-              );})}
+                  <div key={category} style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                    <div style={{ width: "12px", height: "12px", borderRadius: "50%", backgroundColor: color, boxShadow: `0 0 8px ${color}40` }} />
+                    <span style={{ fontSize: "13px", color: "var(--text-primary)", textTransform: "capitalize" }}>{labelForCategory(category)}</span>
+                  </div>
+                );
+              })}
             </div>
           </motion.div>
         )}

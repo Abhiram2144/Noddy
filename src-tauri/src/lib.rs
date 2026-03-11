@@ -65,6 +65,9 @@ enum Intent {
     #[serde(rename = "search_web")]
     SearchWeb { url: String },
     
+    #[serde(rename = "ai_query")]
+    AiQuery { query: String },
+    
     #[serde(rename = "open_app")]
     OpenApp { target: String },
     
@@ -1346,15 +1349,15 @@ fn recall_memories(memory_store: &MemoryStore, user_id: &str) -> Result<Vec<Stri
 // Main command dispatcher with event emission and permission enforcement
 // Accepts typed Intent JSON, deserializes to enum, and dispatches safely.
 #[tauri::command]
-fn execute_action(
+async fn execute_action(
     intent_json: String,
     access_token: String,
     app_handle: tauri::AppHandle,
-    registry: tauri::State<AppRegistry>,
-    memory_store: tauri::State<MemoryStore>,
-    event_bus: tauri::State<EventBus>,
-    permissions: tauri::State<PermissionManager>,
-    auth_config: tauri::State<AuthConfig>,
+    registry: tauri::State<'_, AppRegistry>,
+    memory_store: tauri::State<'_, MemoryStore>,
+    event_bus: tauri::State<'_, EventBus>,
+    permissions: tauri::State<'_, PermissionManager>,
+    auth_config: tauri::State<'_, AuthConfig>,
 ) -> Result<ActionResponse, String> {
     let start_time = std::time::Instant::now();
     let user_id = require_user_from_access_token(&access_token, &auth_config)?;
@@ -1382,6 +1385,7 @@ fn execute_action(
         Intent::SearchMemory { .. } => "search_memory",
         Intent::SetReminder { .. } => "set_reminder",
         Intent::Unknown { .. } => "unknown",
+        Intent::AiQuery { .. } => "ai_query",
     };
     
     // Type-safe dispatch using enum matching (no string comparisons)
@@ -1561,6 +1565,55 @@ fn execute_action(
                             data: None,
                         }
                     },
+                }
+            }
+        }
+        
+        Intent::AiQuery { query } => {
+            // Check permission before executing web search equivalent
+            if let Err(perm_err) = permissions.check_permission(Capability::WebSearch) {
+                event_bus.emit(&Event::ErrorOccurred(perm_err.clone()));
+                return Ok(ActionResponse {
+                    success: false,
+                    message: perm_err,
+                    requires_confirmation: false,
+                    fallback_action: None,
+                    fallback_value: None,
+                    data: None,
+                });
+            }
+            
+            let result = ai::tool_executor::execute_ai_query(
+                &serde_json::json!({ "query": query }),
+                &query,
+            ).await;
+            
+            match result {
+                Ok(answer) => {
+                    let duration_ms = start_time.elapsed().as_millis();
+                    event_bus.emit(&Event::IntentExecuted {
+                        intent_name: "ai_query".to_string(),
+                        duration_ms,
+                    });
+                    ActionResponse {
+                        success: true,
+                        message: answer,
+                        requires_confirmation: false,
+                        fallback_action: None,
+                        fallback_value: None,
+                        data: None,
+                    }
+                },
+                Err(err) => {
+                    event_bus.emit(&Event::ErrorOccurred(err.clone()));
+                    ActionResponse {
+                        success: false,
+                        message: format!("AI Query failed: {}", err),
+                        requires_confirmation: false,
+                        fallback_action: None,
+                        fallback_value: None,
+                        data: None,
+                    }
                 }
             }
         }

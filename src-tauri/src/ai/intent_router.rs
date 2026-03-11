@@ -1,6 +1,6 @@
 use super::{orchestrator::StructuredIntent, tool_executor};
 
-pub fn route_intent(
+pub async fn route_intent(
     user_message: &str,
     structured_intent: StructuredIntent,
     user_id: &str,
@@ -57,6 +57,9 @@ pub fn route_intent(
             plugin_registry,
             event_bus,
         ),
+        "ai_query" => {
+            tool_executor::execute_ai_query(&structured_intent.parameters, user_message).await
+        }
         "unknown" => Ok("No actionable system command detected.".to_string()),
         other => Err(format!("Unsupported intent returned by LLM: {}", other)),
     }

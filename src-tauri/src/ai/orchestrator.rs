@@ -23,7 +23,16 @@ pub async fn process_user_command(
     event_bus: &crate::EventBus,
     permissions: &crate::PermissionManager,
 ) -> Result<String, String> {
-    let prompt = prompt_templates::build_intent_prompt(&message);
+    let history_text = {
+        let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let items = crate::chat_history_store::get_messages(&conn, user_id, 3).unwrap_or_default();
+        items.iter()
+            .map(|m| format!("{}: {}", m.role, m.content))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let prompt = prompt_templates::build_intent_prompt(&message, &history_text);
     let raw_response = llm_client::generate_structured_response(prompt).await?;
     let mut structured_intent = parse_structured_intent(&raw_response)?;
     disambiguate_intent(&message, &mut structured_intent);
@@ -43,6 +52,7 @@ pub async fn process_user_command(
         event_bus,
         permissions,
     )
+    .await
 }
 
 async fn normalize_reminder_parameters_with_llm(

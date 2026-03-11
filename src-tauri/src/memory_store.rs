@@ -86,7 +86,7 @@ pub fn search_memories(
     query: String,
     limit: i32,
 ) -> Result<Vec<Memory>, String> {
-    let search_pattern = format!("%{}%", query);
+    let search_pattern = format!("%{}%", query.trim());
     let mut stmt = conn
         .prepare(
             "SELECT CAST(id AS TEXT),
@@ -115,7 +115,102 @@ pub fn search_memories(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to map search results: {}", e))?;
 
-    Ok(memories)
+    if !memories.is_empty() {
+        return Ok(memories);
+    }
+
+    // Fallback: rank by token overlap so conversational queries still match
+    // memories like "I have Big data analytics class tomorrow".
+    let tokens = extract_search_tokens(&query);
+    if tokens.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut candidate_stmt = conn
+        .prepare(
+            "SELECT CAST(id AS TEXT),
+                    content,
+                    COALESCE(created_at, CAST(strftime('%s', 'now') AS INTEGER)),
+                    COALESCE(importance, 0.5),
+                    COALESCE(source, 'user_input')
+             FROM memories
+             WHERE user_id = ?1 AND content IS NOT NULL
+             ORDER BY created_at DESC
+             LIMIT 250",
+        )
+        .map_err(|e| format!("Failed to prepare fallback search statement: {}", e))?;
+
+    let candidates = candidate_stmt
+        .query_map(params![user_id], |row| {
+            Ok(Memory {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                created_at: row.get(2)?,
+                importance: row.get(3)?,
+                source: row.get(4)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query fallback search candidates: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to map fallback search candidates: {}", e))?;
+
+    let mut ranked: Vec<(usize, Memory)> = candidates
+        .into_iter()
+        .filter_map(|memory| {
+            let score = overlap_score(&memory.content, &tokens);
+            if score > 0 {
+                Some((score, memory))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    ranked.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.importance.partial_cmp(&a.1.importance).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| b.1.created_at.cmp(&a.1.created_at))
+    });
+
+    Ok(ranked
+        .into_iter()
+        .take(limit.max(0) as usize)
+        .map(|(_, memory)| memory)
+        .collect())
+}
+
+fn extract_search_tokens(query: &str) -> Vec<String> {
+    const STOP_WORDS: &[&str] = &[
+        "a", "an", "and", "are", "about", "can", "do", "does", "for", "have", "hey", "i",
+        "in", "is", "know", "me", "my", "of", "on", "or", "please", "that", "the", "to",
+        "what", "when", "where", "who", "why", "you",
+    ];
+
+    let mut seen = std::collections::HashSet::new();
+    query
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c.is_whitespace() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .filter(|token| token.len() >= 2)
+        .filter(|token| !STOP_WORDS.contains(token))
+        .filter(|token| seen.insert((*token).to_string()))
+        .map(|token| token.to_string())
+        .collect()
+}
+
+fn overlap_score(content: &str, query_tokens: &[String]) -> usize {
+    let normalized = content
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c.is_whitespace() { c } else { ' ' })
+        .collect::<String>();
+
+    query_tokens
+        .iter()
+        .filter(|token| normalized.contains(token.as_str()))
+        .count()
 }
 
 pub fn delete_memory(conn: &Connection, user_id: &str, memory_id: &str) -> Result<(), String> {

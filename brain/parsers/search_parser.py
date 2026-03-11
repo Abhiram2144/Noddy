@@ -85,23 +85,11 @@ class SearchParser(BaseParser):
         if not query:
             raise ValueError(f"SearchParser cannot extract query from: {text}")
         
-        # Future: Check LLM availability
-        # if self.LLM_AVAILABLE:
-        #     logger.info(f"Parsed: '{text}' → action=llm_query, value={query}")
-        #     return Intent(
-        #         name="llm_query",
-        #         payload={"query": query},
-        #         confidence=1.0,
-        #         source="llm"
-        #     )
-        
-        # Current: Use Google search
-        search_url = build_google_search_url(query)
-        logger.info(f"Parsed: '{text}' → action=search_web, value={search_url}")
-        logger.info(f"💡 Future: This query '{query}' will be handled by LLM")
+        # Route direct information parsing to the AI agent
+        logger.info(f"Parsed: '{text}' → action=ai_query, value={query}")
         
         return Intent(
-            name="search_web",
-            payload={"query": query, "url": search_url},
+            name="ai_query",
+            payload={"query": query},
             confidence=1.0
         )

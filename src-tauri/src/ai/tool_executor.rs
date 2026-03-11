@@ -179,6 +179,26 @@ pub fn execute_plugin_action(
     Ok(format!("Plugin result: {}", result))
 }
 
+pub async fn execute_ai_query(
+    parameters: &Value,
+    user_message: &str,
+) -> Result<String, String> {
+    let query = parameters
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or(user_message);
+
+    if query.trim().is_empty() {
+        return Ok("I'm not sure what you're asking about.".to_string());
+    }
+
+    let prompt = super::prompt_templates::build_ai_assistant_query_prompt(query);
+
+    let answer = super::llm_client::generate_structured_response(prompt).await?;
+    Ok(answer)
+}
+
+
 fn first_nonempty_string_param<'a>(parameters: &'a Value, keys: &[&str]) -> Option<&'a str> {
     keys.iter()
         .find_map(|key| parameters.get(*key).and_then(Value::as_str))

@@ -67,6 +67,9 @@ def intent_to_response(intent: Intent) -> InterpretResponse:
     elif name == "search_web":
         # Return URL for frontend to open
         value = payload.get("url", "")
+    elif name == "ai_query":
+        # Pass the extracted query content forward directly
+        value = payload.get("query", "")
     elif name == "open_url":
         value = payload.get("url", "")
     elif name == "open_app":
