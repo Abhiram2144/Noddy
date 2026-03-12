@@ -129,9 +129,14 @@ async function fetchReminders(accessToken: string): Promise<Reminder[]> {
   }
 }
 
-async function fetchCommandHistory(accessToken: string): Promise<CommandHistory[]> {
+async function fetchCommandHistory(
+  accessToken: string,
+): Promise<CommandHistory[]> {
   try {
-    const data = await invoke<any>("get_command_history", { limit: 3, accessToken });
+    const data = await invoke<any>("get_command_history", {
+      limit: 3,
+      accessToken,
+    });
     if (Array.isArray(data)) {
       return data.map((cmd: any) => ({
         id: cmd.id || Math.random().toString(),
@@ -195,11 +200,12 @@ async function fetchIntegrations(accessToken: string): Promise<Integration[]> {
 // MOCK DATA (Fallback for development)
 // ============================================================================
 
-const integrationVisuals: Record<string, { icon: LucideIcon; color: string }> = {
-  google: { icon: Calendar, color: "#4285F4" },
-  outlook: { icon: Mail, color: "#0078D4" },
-  custom: { icon: Zap, color: "#8b7bea" },
-};
+const integrationVisuals: Record<string, { icon: LucideIcon; color: string }> =
+  {
+    google: { icon: Calendar, color: "#4285F4" },
+    outlook: { icon: Mail, color: "#0078D4" },
+    custom: { icon: Zap, color: "#8b7bea" },
+  };
 
 function getIntegrationVisual(integration: Integration) {
   return integrationVisuals[integration.provider] || integrationVisuals.custom;
@@ -220,11 +226,18 @@ function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [testResults, setTestResults] = useState<TestCommandResult[]>([]);
   const [isLoadingDashboard, setIsLoadingDashboard] = useState(true);
-  const [pendingReminderNavigation, setPendingReminderNavigation] = useState(false);
-  const [activeReminderAction, setActiveReminderAction] = useState<{ id: number; content: string } | null>(null);
+  const [pendingReminderNavigation, setPendingReminderNavigation] =
+    useState(false);
+  const [activeReminderAction, setActiveReminderAction] = useState<{
+    id: number;
+    content: string;
+  } | null>(null);
   const [isActionProcessing, setIsActionProcessing] = useState(false);
 
-  const invokeAuthed = async <T,>(command: string, payload: Record<string, unknown> = {}): Promise<T> => {
+  const invokeAuthed = async <T,>(
+    command: string,
+    payload: Record<string, unknown> = {},
+  ): Promise<T> => {
     const accessToken = await getAccessToken();
     return invoke<T>(command, { ...payload, accessToken });
   };
@@ -243,7 +256,7 @@ function App() {
           fetchMemories(accessToken),
         ]);
         const integrationsData = await fetchIntegrations(accessToken);
-        
+
         setReminders(remindersData);
         setCommandHistory(historyData);
         setMemories(memoriesData);
@@ -265,7 +278,8 @@ function App() {
     const setup = async () => {
       unlisten = await listen("reminder_fired", async (event: any) => {
         const reminderId = Number(event?.payload?.id);
-        const reminderContent = event?.payload?.content || "You have a reminder.";
+        const reminderContent =
+          event?.payload?.content || "You have a reminder.";
 
         const accessToken = await getAccessToken();
         if (event?.payload?.user_id && event.payload.user_id !== user.id) {
@@ -289,6 +303,32 @@ function App() {
         } catch (notifError) {
           console.warn("Failed to send notification:", notifError);
         }
+      });
+    };
+
+    setup();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [getAccessToken, user?.id]);
+
+  // Handle plugin authentication success
+  useEffect(() => {
+    if (!user) return;
+
+    let unlisten: (() => void) | undefined;
+
+    const setup = async () => {
+      unlisten = await listen("plugin_authenticated", async (event: any) => {
+        const pluginId = event?.payload?.plugin_id;
+        const accessToken = await getAccessToken();
+        const integrationsData = await fetchIntegrations(accessToken);
+        setIntegrations(integrationsData);
+
+        sendNotification({
+          title: "Authentication Successful",
+          body: `Successfully connected to ${pluginId === "google_calendar_plugin" ? "Google" : "Outlook"}!`,
+        });
       });
     };
 
@@ -322,7 +362,9 @@ function App() {
     if (!activeReminderAction) return;
     setIsActionProcessing(true);
     try {
-      await invokeAuthed("finish_reminder", { reminderId: activeReminderAction.id });
+      await invokeAuthed("finish_reminder", {
+        reminderId: activeReminderAction.id,
+      });
       await refreshReminderList();
       setActiveReminderAction(null);
       setPendingReminderNavigation(false);
@@ -353,7 +395,15 @@ function App() {
 
   if (loading) {
     return (
-      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#0d0d0d", color: "#eaeaea" }}>
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "grid",
+          placeItems: "center",
+          background: "#0d0d0d",
+          color: "#eaeaea",
+        }}
+      >
         Loading secure workspace...
       </div>
     );
@@ -361,9 +411,19 @@ function App() {
 
   if (!user) {
     if (authMode === "login") {
-      return <LoginPage onLogin={login} onSwitchToSignup={() => setAuthMode("signup")} />;
+      return (
+        <LoginPage
+          onLogin={login}
+          onSwitchToSignup={() => setAuthMode("signup")}
+        />
+      );
     }
-    return <SignupPage onSignup={signup} onSwitchToLogin={() => setAuthMode("login")} />;
+    return (
+      <SignupPage
+        onSignup={signup}
+        onSwitchToLogin={() => setAuthMode("login")}
+      />
+    );
   }
 
   return (
@@ -380,7 +440,15 @@ function App() {
             <div className="sidebar-logo-icon">🎯</div>
             <span>Noddy</span>
           </div>
-          <div style={{ marginTop: "12px", fontSize: "12px", color: "var(--text-secondary)" }}>{user.email}</div>
+          <div
+            style={{
+              marginTop: "12px",
+              fontSize: "12px",
+              color: "var(--text-secondary)",
+            }}
+          >
+            {user.email}
+          </div>
           <button
             type="button"
             onClick={() => void logout()}
@@ -414,17 +482,25 @@ function App() {
       <main className="main-panel">
         <AnimatePresence mode="wait">
           {currentView === "dashboard" && (
-            <DashboardView key="dashboard" reminders={reminders} history={commandHistory} memories={memories} integrations={integrations} isLoading={isLoadingDashboard} />
+            <DashboardView
+              key="dashboard"
+              reminders={reminders}
+              history={commandHistory}
+              memories={memories}
+              integrations={integrations}
+              isLoading={isLoadingDashboard}
+            />
           )}
-          {currentView === "chat" && (
-            <ChatView key="chat" />
-          )}
+          {currentView === "chat" && <ChatView key="chat" />}
           {currentView === "reminders" && (
-            <RemindersView key="reminders" reminders={reminders} setReminders={setReminders} invokeAuthed={invokeAuthed} />
+            <RemindersView
+              key="reminders"
+              reminders={reminders}
+              setReminders={setReminders}
+              invokeAuthed={invokeAuthed}
+            />
           )}
-          {currentView === "history" && (
-            <CommandHistoryView key="history" />
-          )}
+          {currentView === "history" && <CommandHistoryView key="history" />}
           {currentView === "memory-list" && (
             <MemoryListView key="memory-list" />
           )}
@@ -432,17 +508,32 @@ function App() {
             <MemoryGraphView key="memory-graph" />
           )}
           {currentView === "memory" && (
-            <MemoryView key="memory" memories={memories} setMemories={setMemories} searchQuery={searchQuery} setSearchQuery={setSearchQuery} invokeAuthed={invokeAuthed} />
+            <MemoryView
+              key="memory"
+              memories={memories}
+              setMemories={setMemories}
+              searchQuery={searchQuery}
+              setSearchQuery={setSearchQuery}
+              invokeAuthed={invokeAuthed}
+            />
           )}
           {currentView === "test" && (
-            <TestCommandsView key="test" testResults={testResults} setTestResults={setTestResults} invokeAuthed={invokeAuthed} />
+            <TestCommandsView
+              key="test"
+              testResults={testResults}
+              setTestResults={setTestResults}
+              invokeAuthed={invokeAuthed}
+            />
           )}
           {currentView === "integrations" && (
-            <IntegrationsView key="integrations" integrations={integrations} setIntegrations={setIntegrations} invokeAuthed={invokeAuthed} />
+            <IntegrationsView
+              key="integrations"
+              integrations={integrations}
+              setIntegrations={setIntegrations}
+              invokeAuthed={invokeAuthed}
+            />
           )}
-          {currentView === "settings" && (
-            <SettingsView key="settings" />
-          )}
+          {currentView === "settings" && <SettingsView key="settings" />}
         </AnimatePresence>
       </main>
 
@@ -467,10 +558,24 @@ function App() {
               padding: "16px",
             }}
           >
-            <div style={{ fontSize: "12px", color: "#8fb8ff", marginBottom: "6px", letterSpacing: "0.2px" }}>
+            <div
+              style={{
+                fontSize: "12px",
+                color: "#8fb8ff",
+                marginBottom: "6px",
+                letterSpacing: "0.2px",
+              }}
+            >
               Reminder
             </div>
-            <div style={{ fontSize: "14px", color: "#f3f6fb", marginBottom: "14px", lineHeight: 1.4 }}>
+            <div
+              style={{
+                fontSize: "14px",
+                color: "#f3f6fb",
+                marginBottom: "14px",
+                lineHeight: 1.4,
+              }}
+            >
               {activeReminderAction.content}
             </div>
             <div style={{ display: "flex", gap: "8px" }}>
@@ -502,7 +607,19 @@ function App() {
 // DASHBOARD VIEW
 // ============================================================================
 
-function DashboardView({ reminders, history, memories, integrations, isLoading }: { reminders: Reminder[], history: CommandHistory[], memories: Memory[], integrations: Integration[], isLoading: boolean }) {
+function DashboardView({
+  reminders,
+  history,
+  memories,
+  integrations,
+  isLoading,
+}: {
+  reminders: Reminder[];
+  history: CommandHistory[];
+  memories: Memory[];
+  integrations: Integration[];
+  isLoading: boolean;
+}) {
   return (
     <motion.div
       className="panel-container"
@@ -522,7 +639,15 @@ function DashboardView({ reminders, history, memories, integrations, isLoading }
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
         >
-          <div style={{ fontSize: "48px", marginBottom: "16px", animation: "pulse 1.5s infinite" }}>⏳</div>
+          <div
+            style={{
+              fontSize: "48px",
+              marginBottom: "16px",
+              animation: "pulse 1.5s infinite",
+            }}
+          >
+            ⏳
+          </div>
           <p>Loading your dashboard...</p>
         </motion.div>
       ) : (
@@ -534,134 +659,249 @@ function DashboardView({ reminders, history, memories, integrations, isLoading }
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.1 }}
             whileHover={{ y: -4 }}
-        >
-          <div className="card-header">
-            <h3 className="card-title">
-              <Bell className="card-icon" />
-              Upcoming Reminders
-            </h3>
-            <span className="badge badge-warning">{reminders.length}</span>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            {reminders.slice(0, 3).map((reminder) => (
-              <div key={reminder.id} className="list-item">
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start" }}>
-                  <div>
-                    <div style={{ fontSize: "14px", color: "var(--text-primary)", marginBottom: "4px" }}>{reminder.content}</div>
-                    <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
-                      <Clock style={{ width: "12px", height: "12px", display: "inline", marginRight: "4px" }} />
-                      {reminder.time}
-                    </div>
-                  </div>
-                  <span className="badge badge-success" style={{ fontSize: "10px" }}>{reminder.source}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </motion.div>
-
-        {/* Recent Commands Card */}
-        <motion.div
-          className="card"
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          whileHover={{ y: -4 }}
-        >
-          <div className="card-header">
-            <h3 className="card-title">
-              <History className="card-icon" />
-              Recent Commands
-            </h3>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            {history.slice(0, 3).map((cmd) => (
-              <div key={cmd.id} className="list-item">
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: "13px", fontFamily: "monospace", color: "var(--text-primary)", marginBottom: "4px" }}>{cmd.command}</div>
-                    <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>{cmd.timestamp} • {cmd.duration}ms</div>
-                  </div>
-                  {cmd.success ? (
-                    <CheckCircle2 style={{ width: "16px", height: "16px", color: "var(--success)" }} />
-                  ) : (
-                    <XCircle style={{ width: "16px", height: "16px", color: "var(--error)" }} />
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </motion.div>
-
-        {/* Memory Summary Card */}
-        <motion.div
-          className="card"
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          whileHover={{ y: -4 }}
-        >
-          <div className="card-header">
-            <h3 className="card-title">
-              <Brain className="card-icon" />
-              Memory Vault
-            </h3>
-            <span className="badge badge-success">{memories.length}</span>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            {memories.slice(0, 2).map((memory) => (
-              <div key={memory.id} className="list-item">
-                <div style={{ fontSize: "13px", color: "var(--text-primary)", marginBottom: "4px", lineHeight: "1.5" }}>
-                  {memory.content.substring(0, 80)}...
-                </div>
-                <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>{memory.timestamp}</div>
-              </div>
-            ))}
-          </div>
-        </motion.div>
-
-        {/* Integration Status Card */}
-        <motion.div
-          className="card"
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4 }}
-          whileHover={{ y: -4 }}
-        >
-          <div className="card-header">
-            <h3 className="card-title">
-              <Zap className="card-icon" />
-              Integrations
-            </h3>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            {integrations.length === 0 ? (
-              <div className="list-item">
-                <div style={{ fontSize: "13px", color: "var(--text-secondary)" }}>No plugins installed yet</div>
-              </div>
-            ) : (
-              integrations.map((integration) => {
-                const visual = getIntegrationVisual(integration);
-                return (
-                  <div key={integration.id} className="list-item">
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                        <div style={{ color: visual.color, display: "flex", alignItems: "center" }}>
-                          <visual.icon size={20} />
-                        </div>
-                        <span style={{ fontSize: "14px", color: "var(--text-primary)" }}>{integration.name}</span>
+          >
+            <div className="card-header">
+              <h3 className="card-title">
+                <Bell className="card-icon" />
+                Upcoming Reminders
+              </h3>
+              <span className="badge badge-warning">{reminders.length}</span>
+            </div>
+            <div
+              style={{ display: "flex", flexDirection: "column", gap: "12px" }}
+            >
+              {reminders.slice(0, 3).map((reminder) => (
+                <div key={reminder.id} className="list-item">
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "start",
+                    }}
+                  >
+                    <div>
+                      <div
+                        style={{
+                          fontSize: "14px",
+                          color: "var(--text-primary)",
+                          marginBottom: "4px",
+                        }}
+                      >
+                        {reminder.content}
                       </div>
-                      <span className={`badge ${integration.enabled ? "badge-success" : "badge-error"}`}>
-                        {integration.enabled ? "Enabled" : "Disabled"}
-                      </span>
+                      <div
+                        style={{
+                          fontSize: "12px",
+                          color: "var(--text-secondary)",
+                        }}
+                      >
+                        <Clock
+                          style={{
+                            width: "12px",
+                            height: "12px",
+                            display: "inline",
+                            marginRight: "4px",
+                          }}
+                        />
+                        {reminder.time}
+                      </div>
                     </div>
+                    <span
+                      className="badge badge-success"
+                      style={{ fontSize: "10px" }}
+                    >
+                      {reminder.source}
+                    </span>
                   </div>
-                );
-              })
-            )}
-          </div>
-        </motion.div>
-      </div>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+
+          {/* Recent Commands Card */}
+          <motion.div
+            className="card"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2 }}
+            whileHover={{ y: -4 }}
+          >
+            <div className="card-header">
+              <h3 className="card-title">
+                <History className="card-icon" />
+                Recent Commands
+              </h3>
+            </div>
+            <div
+              style={{ display: "flex", flexDirection: "column", gap: "12px" }}
+            >
+              {history.slice(0, 3).map((cmd) => (
+                <div key={cmd.id} className="list-item">
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                    }}
+                  >
+                    <div>
+                      <div
+                        style={{
+                          fontSize: "13px",
+                          fontFamily: "monospace",
+                          color: "var(--text-primary)",
+                          marginBottom: "4px",
+                        }}
+                      >
+                        {cmd.command}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: "12px",
+                          color: "var(--text-secondary)",
+                        }}
+                      >
+                        {cmd.timestamp} • {cmd.duration}ms
+                      </div>
+                    </div>
+                    {cmd.success ? (
+                      <CheckCircle2
+                        style={{
+                          width: "16px",
+                          height: "16px",
+                          color: "var(--success)",
+                        }}
+                      />
+                    ) : (
+                      <XCircle
+                        style={{
+                          width: "16px",
+                          height: "16px",
+                          color: "var(--error)",
+                        }}
+                      />
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+
+          {/* Memory Summary Card */}
+          <motion.div
+            className="card"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.3 }}
+            whileHover={{ y: -4 }}
+          >
+            <div className="card-header">
+              <h3 className="card-title">
+                <Brain className="card-icon" />
+                Memory Vault
+              </h3>
+              <span className="badge badge-success">{memories.length}</span>
+            </div>
+            <div
+              style={{ display: "flex", flexDirection: "column", gap: "12px" }}
+            >
+              {memories.slice(0, 2).map((memory) => (
+                <div key={memory.id} className="list-item">
+                  <div
+                    style={{
+                      fontSize: "13px",
+                      color: "var(--text-primary)",
+                      marginBottom: "4px",
+                      lineHeight: "1.5",
+                    }}
+                  >
+                    {memory.content.substring(0, 80)}...
+                  </div>
+                  <div
+                    style={{ fontSize: "12px", color: "var(--text-secondary)" }}
+                  >
+                    {memory.timestamp}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+
+          {/* Integration Status Card */}
+          <motion.div
+            className="card"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.4 }}
+            whileHover={{ y: -4 }}
+          >
+            <div className="card-header">
+              <h3 className="card-title">
+                <Zap className="card-icon" />
+                Integrations
+              </h3>
+            </div>
+            <div
+              style={{ display: "flex", flexDirection: "column", gap: "12px" }}
+            >
+              {integrations.length === 0 ? (
+                <div className="list-item">
+                  <div
+                    style={{ fontSize: "13px", color: "var(--text-secondary)" }}
+                  >
+                    No plugins installed yet
+                  </div>
+                </div>
+              ) : (
+                integrations.map((integration) => {
+                  const visual = getIntegrationVisual(integration);
+                  return (
+                    <div key={integration.id} className="list-item">
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "12px",
+                          }}
+                        >
+                          <div
+                            style={{
+                              color: visual.color,
+                              display: "flex",
+                              alignItems: "center",
+                            }}
+                          >
+                            <visual.icon size={20} />
+                          </div>
+                          <span
+                            style={{
+                              fontSize: "14px",
+                              color: "var(--text-primary)",
+                            }}
+                          >
+                            {integration.name}
+                          </span>
+                        </div>
+                        <span
+                          className={`badge ${integration.enabled ? "badge-success" : "badge-error"}`}
+                        >
+                          {integration.enabled ? "Enabled" : "Disabled"}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </motion.div>
+        </div>
       )}
     </motion.div>
   );
@@ -671,7 +911,18 @@ function DashboardView({ reminders, history, memories, integrations, isLoading }
 // REMINDERS VIEW
 // ============================================================================
 
-function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: Reminder[], setReminders: React.Dispatch<React.SetStateAction<Reminder[]>>, invokeAuthed: <T>(command: string, payload?: Record<string, unknown>) => Promise<T> }) {
+function RemindersView({
+  reminders,
+  setReminders,
+  invokeAuthed,
+}: {
+  reminders: Reminder[];
+  setReminders: React.Dispatch<React.SetStateAction<Reminder[]>>;
+  invokeAuthed: <T>(
+    command: string,
+    payload?: Record<string, unknown>,
+  ) => Promise<T>;
+}) {
   const [showModal, setShowModal] = useState(false);
   const [reminderContent, setReminderContent] = useState("");
   const [reminderDate, setReminderDate] = useState("");
@@ -683,7 +934,7 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
   useEffect(() => {
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
-    const dateStr = tomorrow.toISOString().split('T')[0];
+    const dateStr = tomorrow.toISOString().split("T")[0];
     const timeStr = new Date().toTimeString().slice(0, 5);
     setReminderDate(dateStr);
     setReminderTime(timeStr);
@@ -709,31 +960,35 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
   // Format relative time without seconds (minutes, hours, days only)
   const formatRelativeTime = (expiresAt: number) => {
     const diff = expiresAt - currentTime;
-    
+
     if (diff < 0) {
       // Past time
       const absDiff = Math.abs(diff);
       if (absDiff < 3600) {
         const mins = Math.floor(absDiff / 60);
-        return mins === 0 ? "just now" : `${mins} minute${mins !== 1 ? 's' : ''} ago`;
+        return mins === 0
+          ? "just now"
+          : `${mins} minute${mins !== 1 ? "s" : ""} ago`;
       } else if (absDiff < 86400) {
         const hours = Math.floor(absDiff / 3600);
-        return `${hours} hour${hours !== 1 ? 's' : ''} ago`;
+        return `${hours} hour${hours !== 1 ? "s" : ""} ago`;
       } else {
         const days = Math.floor(absDiff / 86400);
-        return `${days} day${days !== 1 ? 's' : ''} ago`;
+        return `${days} day${days !== 1 ? "s" : ""} ago`;
       }
     } else {
       // Future time
       if (diff < 3600) {
         const mins = Math.floor(diff / 60);
-        return mins === 0 ? "in less than a minute" : `in ${mins} minute${mins !== 1 ? 's' : ''}`;
+        return mins === 0
+          ? "in less than a minute"
+          : `in ${mins} minute${mins !== 1 ? "s" : ""}`;
       } else if (diff < 86400) {
         const hours = Math.floor(diff / 3600);
-        return `in ${hours} hour${hours !== 1 ? 's' : ''}`;
+        return `in ${hours} hour${hours !== 1 ? "s" : ""}`;
       } else {
         const days = Math.floor(diff / 86400);
-        return `in ${days} day${days !== 1 ? 's' : ''}`;
+        return `in ${days} day${days !== 1 ? "s" : ""}`;
       }
     }
   };
@@ -741,16 +996,29 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
   // Format Unix timestamp to absolute date/time (e.g., "Mar 5, 2026 3:45 PM")
   const formatAbsoluteDateTime = (timestamp: number) => {
     const date = new Date(timestamp * 1000);
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const months = [
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec",
+    ];
     const month = months[date.getMonth()];
     const day = date.getDate();
     const year = date.getFullYear();
     let hours = date.getHours();
     const minutes = date.getMinutes();
-    const ampm = hours >= 12 ? 'PM' : 'AM';
+    const ampm = hours >= 12 ? "PM" : "AM";
     hours = hours % 12;
     hours = hours ? hours : 12;
-    const minuteStr = minutes < 10 ? '0' + minutes : minutes;
+    const minuteStr = minutes < 10 ? "0" + minutes : minutes;
     return `${month} ${day}, ${year} ${hours}:${minuteStr} ${ampm}`;
   };
 
@@ -760,7 +1028,7 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
     } catch (e) {
       console.warn("Failed to delete reminder from DB:", e);
     }
-    setReminders(reminders.filter(r => r.id !== id));
+    setReminders(reminders.filter((r) => r.id !== id));
   };
 
   const createReminder = async () => {
@@ -787,13 +1055,16 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
         name: "set_reminder",
         payload: {
           content: reminderContent,
-          trigger_at: trigger_at
-        }
+          trigger_at: trigger_at,
+        },
       });
 
-      const result = await invokeAuthed<{ success: boolean; message: string }>("execute_action", {
-        intentJson,
-      });
+      const result = await invokeAuthed<{ success: boolean; message: string }>(
+        "execute_action",
+        {
+          intentJson,
+        },
+      );
 
       if (result.success) {
         // Close modal silently without confirmation message
@@ -801,11 +1072,13 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
         setReminderContent("");
         const tomorrow = new Date();
         tomorrow.setDate(tomorrow.getDate() + 1);
-        setReminderDate(tomorrow.toISOString().split('T')[0]);
+        setReminderDate(tomorrow.toISOString().split("T")[0]);
         setReminderTime(new Date().toTimeString().slice(0, 5));
-        
+
         // Refresh reminders list
-        const updated = await invokeAuthed<Reminder[]>("get_reminders", { limit: 10 });
+        const updated = await invokeAuthed<Reminder[]>("get_reminders", {
+          limit: 10,
+        });
         setReminders(updated);
       } else {
         alert(`❌ Failed: ${result.message}`);
@@ -826,12 +1099,18 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
       transition={{ duration: 0.4 }}
     >
       <div className="panel-header">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
           <div>
             <h1 className="panel-title">Reminders</h1>
             <p className="panel-subtitle">Manage your upcoming reminders</p>
           </div>
-          <motion.button 
+          <motion.button
             className="btn btn-primary"
             onClick={() => setShowModal(true)}
             whileHover={{ scale: 1.02 }}
@@ -878,13 +1157,34 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
               }}
               onClick={(e) => e.stopPropagation()}
             >
-              <h2 style={{ fontSize: "24px", fontWeight: 600, marginBottom: "24px", color: "var(--text-primary)" }}>
+              <h2
+                style={{
+                  fontSize: "24px",
+                  fontWeight: 600,
+                  marginBottom: "24px",
+                  color: "var(--text-primary)",
+                }}
+              >
                 🔔 Create New Reminder
               </h2>
 
-              <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "20px",
+                }}
+              >
                 <div>
-                  <label style={{ display: "block", fontSize: "13px", fontWeight: 500, marginBottom: "8px", color: "var(--text-secondary)" }}>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "13px",
+                      fontWeight: 500,
+                      marginBottom: "8px",
+                      color: "var(--text-secondary)",
+                    }}
+                  >
                     What do you want to be reminded about?
                   </label>
                   <textarea
@@ -901,7 +1201,15 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
                 </div>
 
                 <div>
-                  <label style={{ display: "block", fontSize: "13px", fontWeight: 500, marginBottom: "8px", color: "var(--text-secondary)" }}>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "13px",
+                      fontWeight: 500,
+                      marginBottom: "8px",
+                      color: "var(--text-secondary)",
+                    }}
+                  >
                     When should I remind you?
                   </label>
                   <div style={{ display: "flex", gap: "12px" }}>
@@ -920,17 +1228,27 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
                       style={{ flex: 1 }}
                     />
                   </div>
-                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "8px" }}>
+                  <p
+                    style={{
+                      fontSize: "12px",
+                      color: "var(--text-secondary)",
+                      marginTop: "8px",
+                    }}
+                  >
                     {reminderDate && reminderTime
                       ? (() => {
                           const trigger_at = calculateTriggerAt();
-                          return trigger_at ? `Reminder set for ${formatAbsoluteDateTime(trigger_at)}` : "Invalid date/time";
+                          return trigger_at
+                            ? `Reminder set for ${formatAbsoluteDateTime(trigger_at)}`
+                            : "Invalid date/time";
                         })()
                       : "Select date and time"}
                   </p>
                 </div>
 
-                <div style={{ display: "flex", gap: "12px", marginTop: "12px" }}>
+                <div
+                  style={{ display: "flex", gap: "12px", marginTop: "12px" }}
+                >
                   <motion.button
                     className="btn btn-primary"
                     onClick={createReminder}
@@ -968,7 +1286,9 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
             <p>No reminders yet</p>
           </motion.div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: "12px" }}
+          >
             {reminders.map((reminder, index) => (
               <motion.div
                 key={reminder.id}
@@ -978,16 +1298,49 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
                 exit={{ opacity: 0, x: 20, height: 0 }}
                 transition={{ delay: index * 0.05 }}
                 whileHover={{ scale: 1.01 }}
-                style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
               >
                 <div>
-                  <div style={{ fontSize: "15px", fontWeight: 500, color: "var(--text-primary)", marginBottom: "6px" }}>{reminder.content}</div>
-                  <div style={{ fontSize: "13px", color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: "12px" }}>
+                  <div
+                    style={{
+                      fontSize: "15px",
+                      fontWeight: 500,
+                      color: "var(--text-primary)",
+                      marginBottom: "6px",
+                    }}
+                  >
+                    {reminder.content}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: "13px",
+                      color: "var(--text-secondary)",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "12px",
+                    }}
+                  >
                     <span>
-                      <Clock style={{ width: "14px", height: "14px", display: "inline", marginRight: "4px" }} />
+                      <Clock
+                        style={{
+                          width: "14px",
+                          height: "14px",
+                          display: "inline",
+                          marginRight: "4px",
+                        }}
+                      />
                       {formatRelativeTime(reminder.trigger_at)}
                     </span>
-                    <span className="badge badge-success" style={{ fontSize: "11px" }}>{reminder.source}</span>
+                    <span
+                      className="badge badge-success"
+                      style={{ fontSize: "11px" }}
+                    >
+                      {reminder.source}
+                    </span>
                   </div>
                 </div>
                 <motion.button
@@ -1011,21 +1364,24 @@ function RemindersView({ reminders, setReminders, invokeAuthed }: { reminders: R
 // MEMORY VIEW
 // ============================================================================
 
-function MemoryView({ 
-  memories, 
-  setMemories, 
-  searchQuery, 
+function MemoryView({
+  memories,
+  setMemories,
+  searchQuery,
   setSearchQuery,
-  invokeAuthed
-}: { 
-  memories: Memory[], 
-  setMemories: React.Dispatch<React.SetStateAction<Memory[]>>, 
-  searchQuery: string, 
-  setSearchQuery: React.Dispatch<React.SetStateAction<string>>,
-  invokeAuthed: <T>(command: string, payload?: Record<string, unknown>) => Promise<T>
+  invokeAuthed,
+}: {
+  memories: Memory[];
+  setMemories: React.Dispatch<React.SetStateAction<Memory[]>>;
+  searchQuery: string;
+  setSearchQuery: React.Dispatch<React.SetStateAction<string>>;
+  invokeAuthed: <T>(
+    command: string,
+    payload?: Record<string, unknown>,
+  ) => Promise<T>;
 }) {
-  const filteredMemories = memories.filter(m => 
-    m.content.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredMemories = memories.filter((m) =>
+    m.content.toLowerCase().includes(searchQuery.toLowerCase()),
   );
 
   const deleteMemory = async (id: string) => {
@@ -1034,7 +1390,7 @@ function MemoryView({
     } catch (e) {
       console.warn("Failed to delete memory from DB:", e);
     }
-    setMemories(memories.filter(m => m.id !== id));
+    setMemories(memories.filter((m) => m.id !== id));
   };
 
   return (
@@ -1052,7 +1408,17 @@ function MemoryView({
 
       <div style={{ marginBottom: "24px" }}>
         <div style={{ position: "relative" }}>
-          <Search style={{ position: "absolute", left: "16px", top: "50%", transform: "translateY(-50%)", width: "18px", height: "18px", color: "var(--text-tertiary)" }} />
+          <Search
+            style={{
+              position: "absolute",
+              left: "16px",
+              top: "50%",
+              transform: "translateY(-50%)",
+              width: "18px",
+              height: "18px",
+              color: "var(--text-tertiary)",
+            }}
+          />
           <input
             type="text"
             className="search-input"
@@ -1073,10 +1439,14 @@ function MemoryView({
             exit={{ opacity: 0 }}
           >
             <Brain className="empty-state-icon" />
-            <p>{searchQuery ? "No memories found" : "No memories stored yet"}</p>
+            <p>
+              {searchQuery ? "No memories found" : "No memories stored yet"}
+            </p>
           </motion.div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: "12px" }}
+          >
             {filteredMemories.map((memory, index) => (
               <motion.div
                 key={memory.id}
@@ -1086,13 +1456,29 @@ function MemoryView({
                 exit={{ opacity: 0, x: -20, height: 0 }}
                 transition={{ delay: index * 0.03 }}
                 whileHover={{ scale: 1.01 }}
-                style={{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: "16px" }}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "start",
+                  gap: "16px",
+                }}
               >
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "14px", color: "var(--text-primary)", marginBottom: "8px", lineHeight: "1.6" }}>
+                  <div
+                    style={{
+                      fontSize: "14px",
+                      color: "var(--text-primary)",
+                      marginBottom: "8px",
+                      lineHeight: "1.6",
+                    }}
+                  >
                     {memory.content}
                   </div>
-                  <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>{memory.timestamp}</div>
+                  <div
+                    style={{ fontSize: "12px", color: "var(--text-secondary)" }}
+                  >
+                    {memory.timestamp}
+                  </div>
                 </div>
                 <motion.button
                   className="btn btn-secondary"
@@ -1115,16 +1501,21 @@ function MemoryView({
 // INTEGRATIONS VIEW
 // ============================================================================
 
-function IntegrationsView({ 
-  integrations, 
+function IntegrationsView({
+  integrations,
   setIntegrations,
-  invokeAuthed 
-}: { 
-  integrations: Integration[], 
-  setIntegrations: React.Dispatch<React.SetStateAction<Integration[]>>,
-  invokeAuthed: <T>(command: string, payload?: Record<string, unknown>) => Promise<T>
+  invokeAuthed,
+}: {
+  integrations: Integration[];
+  setIntegrations: React.Dispatch<React.SetStateAction<Integration[]>>;
+  invokeAuthed: <T>(
+    command: string,
+    payload?: Record<string, unknown>,
+  ) => Promise<T>;
 }) {
-  const [selectedPluginId, setSelectedPluginId] = useState<string | null>(integrations[0]?.id ?? null);
+  const [selectedPluginId, setSelectedPluginId] = useState<string | null>(
+    integrations[0]?.id ?? null,
+  );
   const [configDraft, setConfigDraft] = useState("{}");
   const [isSaving, setIsSaving] = useState(false);
 
@@ -1134,12 +1525,17 @@ function IntegrationsView({
       return;
     }
 
-    if (selectedPluginId && !integrations.some((integration) => integration.id === selectedPluginId)) {
+    if (
+      selectedPluginId &&
+      !integrations.some((integration) => integration.id === selectedPluginId)
+    ) {
       setSelectedPluginId(integrations[0]?.id ?? null);
     }
   }, [integrations, selectedPluginId]);
 
-  const selectedPlugin = integrations.find((integration) => integration.id === selectedPluginId) ?? null;
+  const selectedPlugin =
+    integrations.find((integration) => integration.id === selectedPluginId) ??
+    null;
 
   useEffect(() => {
     setConfigDraft(selectedPlugin?.config_json || "{}");
@@ -1157,6 +1553,19 @@ function IntegrationsView({
         await invokeAuthed("disable_plugin", { pluginId: plugin.id });
       } else {
         await invokeAuthed("enable_plugin", { pluginId: plugin.id });
+
+        // Trigger OAuth for specific plugins
+        if (
+          plugin.id === "google_calendar_plugin" ||
+          plugin.id === "outlook_plugin"
+        ) {
+          try {
+            await invokeAuthed("authenticate_plugin", { pluginId: plugin.id });
+          } catch (authError) {
+            console.error("Auto-authentication failed:", authError);
+            // Non-blocking but good to log
+          }
+        }
       }
       await refreshIntegrations();
     } catch (error) {
@@ -1196,7 +1605,9 @@ function IntegrationsView({
     >
       <div className="panel-header">
         <h1 className="panel-title">Integrations</h1>
-        <p className="panel-subtitle">Manage modular plugins and external service integrations</p>
+        <p className="panel-subtitle">
+          Manage modular plugins and external service integrations
+        </p>
       </div>
 
       <div className="grid grid-2" style={{ alignItems: "start" }}>
@@ -1212,38 +1623,177 @@ function IntegrationsView({
                 transition={{ delay: index * 0.08 }}
                 whileHover={{ y: -4 }}
                 style={{
-                  border: selectedPluginId === integration.id ? `1px solid ${visual.color}` : undefined,
+                  border:
+                    selectedPluginId === integration.id
+                      ? `1px solid ${visual.color}`
+                      : undefined,
                   cursor: "pointer",
                 }}
                 onClick={() => setSelectedPluginId(integration.id)}
               >
-                <div style={{ display: "flex", alignItems: "start", justifyContent: "space-between", marginBottom: "20px", gap: "16px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                    <div style={{ width: "48px", height: "48px", borderRadius: "12px", background: `${visual.color}15`, display: "flex", alignItems: "center", justifyContent: "center", color: visual.color }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "start",
+                    justifyContent: "space-between",
+                    marginBottom: "20px",
+                    gap: "16px",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "12px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: "48px",
+                        height: "48px",
+                        borderRadius: "12px",
+                        background: `${visual.color}15`,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: visual.color,
+                      }}
+                    >
                       <visual.icon size={24} />
                     </div>
                     <div>
-                      <h3 style={{ fontSize: "16px", fontWeight: 600, color: "var(--text-primary)", marginBottom: "4px" }}>{integration.name}</h3>
-                      <p style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "8px", lineHeight: 1.5 }}>{integration.description}</p>
-                      <span className={`badge ${integration.enabled ? "badge-success" : "badge-error"}`}>
+                      <h3
+                        style={{
+                          fontSize: "16px",
+                          fontWeight: 600,
+                          color: "var(--text-primary)",
+                          marginBottom: "4px",
+                        }}
+                      >
+                        {integration.name}
+                      </h3>
+                      <p
+                        style={{
+                          fontSize: "13px",
+                          color: "var(--text-secondary)",
+                          marginBottom: "8px",
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        {integration.description}
+                      </p>
+                      <span
+                        className={`badge ${integration.enabled ? "badge-success" : "badge-error"}`}
+                      >
                         {integration.enabled ? "Enabled" : "Disabled"}
                       </span>
                     </div>
                   </div>
                 </div>
-                <motion.button
-                  className={`btn ${integration.enabled ? "btn-secondary" : "btn-primary"}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void togglePlugin(integration);
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "10px",
                   }}
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  style={{ width: "100%" }}
-                  disabled={isSaving}
                 >
-                  {integration.enabled ? "Disable Plugin" : "Enable Plugin"}
-                </motion.button>
+                  <motion.button
+                    className={`btn ${integration.enabled ? "btn-secondary" : "btn-primary"}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void togglePlugin(integration);
+                    }}
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    style={{ width: "100%" }}
+                    disabled={isSaving}
+                  >
+                    {integration.enabled ? "Disable Plugin" : "Enable Plugin"}
+                  </motion.button>
+
+                  {integration.enabled &&
+                    (integration.id === "google_calendar_plugin" ||
+                      integration.id === "outlook_plugin") && (
+                      <div style={{ marginTop: "10px" }}>
+                        {(() => {
+                          try {
+                            const config = JSON.parse(
+                              integration.config_json || "{}",
+                            );
+                            if (config.tokens) {
+                              return (
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    gap: "8px",
+                                    padding: "12px",
+                                    borderRadius: "12px",
+                                    background: "rgba(34, 197, 94, 0.1)",
+                                    border: "1px solid rgba(34, 197, 94, 0.2)",
+                                    color: "#22c55e",
+                                    fontWeight: "600",
+                                    fontSize: "0.9rem",
+                                  }}
+                                >
+                                  <svg
+                                    width="16"
+                                    height="16"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="3"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  >
+                                    <polyline points="20 6 9 17 4 12"></polyline>
+                                  </svg>
+                                  Connected
+                                </div>
+                              );
+                            }
+                          } catch (e) {
+                            /* Ignore parse error */
+                          }
+
+                          return (
+                            <motion.button
+                              className="btn btn-primary"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                invokeAuthed("authenticate_plugin", {
+                                  pluginId: integration.id,
+                                })
+                                  .then(() => {
+                                    sendNotification({
+                                      title: "Authentication Started",
+                                      body: `Please sign in to ${integration.name} in your browser.`,
+                                    });
+                                  })
+                                  .catch((err) => {
+                                    alert(
+                                      `Failed to start authentication: ${err}`,
+                                    );
+                                  });
+                              }}
+                              whileHover={{ scale: 1.02 }}
+                              whileTap={{ scale: 0.98 }}
+                              style={{
+                                width: "100%",
+                                background:
+                                  "linear-gradient(135deg, #4a9eff 0%, #357abd 100%)",
+                                boxShadow: "0 4px 12px rgba(74, 158, 255, 0.2)",
+                              }}
+                              disabled={isSaving}
+                            >
+                              Sign In to {integration.name}
+                            </motion.button>
+                          );
+                        })()}
+                      </div>
+                    )}
+                </div>
               </motion.div>
             );
           })}
@@ -1259,12 +1809,40 @@ function IntegrationsView({
           {selectedPlugin ? (
             <>
               <div style={{ marginBottom: "20px" }}>
-                <h3 style={{ fontSize: "18px", fontWeight: 600, color: "var(--text-primary)", marginBottom: "6px" }}>{selectedPlugin.name}</h3>
-                <p style={{ fontSize: "13px", color: "var(--text-secondary)", lineHeight: 1.6 }}>{selectedPlugin.description}</p>
+                <h3
+                  style={{
+                    fontSize: "18px",
+                    fontWeight: 600,
+                    color: "var(--text-primary)",
+                    marginBottom: "6px",
+                  }}
+                >
+                  {selectedPlugin.name}
+                </h3>
+                <p
+                  style={{
+                    fontSize: "13px",
+                    color: "var(--text-secondary)",
+                    lineHeight: 1.6,
+                  }}
+                >
+                  {selectedPlugin.description}
+                </p>
               </div>
 
               <div style={{ marginBottom: "20px" }}>
-                <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px", fontWeight: 500 }}>Capabilities</p>
+                <p
+                  style={{
+                    fontSize: "12px",
+                    color: "var(--text-secondary)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.5px",
+                    marginBottom: "10px",
+                    fontWeight: 500,
+                  }}
+                >
+                  Capabilities
+                </p>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
                   {selectedPlugin.capabilities.map((capability) => (
                     <span key={capability} className="badge badge-primary">
@@ -1275,15 +1853,41 @@ function IntegrationsView({
               </div>
 
               <div>
-                <p style={{ fontSize: "12px", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px", fontWeight: 500 }}>Configuration JSON</p>
+                <p
+                  style={{
+                    fontSize: "12px",
+                    color: "var(--text-secondary)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.5px",
+                    marginBottom: "10px",
+                    fontWeight: 500,
+                  }}
+                >
+                  Configuration JSON
+                </p>
                 <textarea
                   value={configDraft}
                   onChange={(event) => setConfigDraft(event.target.value)}
                   className="search-input"
-                  style={{ minHeight: "240px", width: "100%", resize: "vertical", fontFamily: "monospace", fontSize: "13px" }}
+                  style={{
+                    minHeight: "240px",
+                    width: "100%",
+                    resize: "vertical",
+                    fontFamily: "monospace",
+                    fontSize: "13px",
+                  }}
                 />
-                <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "8px", lineHeight: 1.5 }}>
-                  Example keys: Google Calendar uses calendar_id. Outlook uses task_list. Additional keys can be added without changing the core system.
+                <p
+                  style={{
+                    fontSize: "12px",
+                    color: "var(--text-secondary)",
+                    marginTop: "8px",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Example keys: Google Calendar uses calendar_id. Outlook uses
+                  task_list. Additional keys can be added without changing the
+                  core system.
                 </p>
               </div>
 
@@ -1357,7 +1961,16 @@ function parseTestCommand(input: string): string {
   }
 
   // recall / what do you remember / etc
-  if (["recall", "what do you remember", "what do you remember?", "recall memory", "recall memories", "show memories"].includes(trimmed)) {
+  if (
+    [
+      "recall",
+      "what do you remember",
+      "what do you remember?",
+      "recall memory",
+      "recall memories",
+      "show memories",
+    ].includes(trimmed)
+  ) {
     return JSON.stringify({ name: "recall_memory" });
   }
 
@@ -1374,7 +1987,9 @@ function parseTestCommand(input: string): string {
     let delaySeconds = 3600; // Default: 1 hour
 
     // Parse time specifications: "in X minutes/hours/days", "tomorrow", "at HH:mm"
-    const inMatch = remainder.match(/^(.+?)\s+in\s+(\d+)\s+(minute|hour|day)s?$/i);
+    const inMatch = remainder.match(
+      /^(.+?)\s+in\s+(\d+)\s+(minute|hour|day)s?$/i,
+    );
     if (inMatch) {
       content = inMatch[1].trim();
       const amount = parseInt(inMatch[2], 10);
@@ -1383,16 +1998,18 @@ function parseTestCommand(input: string): string {
       else if (unit === "hour") delaySeconds = amount * 3600;
       else if (unit === "day") delaySeconds = amount * 86400;
     } else {
-      const tomorrowMatch = remainder.match(/^(.+?)\s+tomorrow\s+at\s+(\d{1,2}):(\d{2})(am|pm)?$/i);
+      const tomorrowMatch = remainder.match(
+        /^(.+?)\s+tomorrow\s+at\s+(\d{1,2}):(\d{2})(am|pm)?$/i,
+      );
       if (tomorrowMatch) {
         content = tomorrowMatch[1].trim();
         let hour = parseInt(tomorrowMatch[2], 10);
         const minute = parseInt(tomorrowMatch[3], 10);
         const ampm = tomorrowMatch[4]?.toLowerCase();
-        
+
         if (ampm === "pm" && hour !== 12) hour += 12;
         if (ampm === "am" && hour === 12) hour = 0;
-        
+
         const tomorrow = new Date();
         tomorrow.setDate(tomorrow.getDate() + 1);
         tomorrow.setHours(hour, minute, 0, 0);
@@ -1400,17 +2017,28 @@ function parseTestCommand(input: string): string {
       }
     }
 
-    return JSON.stringify({ name: "set_reminder", payload: { content, trigger_at: Math.floor(Date.now() / 1000) + delaySeconds } });
+    return JSON.stringify({
+      name: "set_reminder",
+      payload: {
+        content,
+        trigger_at: Math.floor(Date.now() / 1000) + delaySeconds,
+      },
+    });
   }
 
   // google X / search web X / what is X / what's X
-  if (trimmed.startsWith("google ") || trimmed.startsWith("search web ") || trimmed.startsWith("what is ") || trimmed.startsWith("what's ")) {
+  if (
+    trimmed.startsWith("google ") ||
+    trimmed.startsWith("search web ") ||
+    trimmed.startsWith("what is ") ||
+    trimmed.startsWith("what's ")
+  ) {
     let query = "";
     if (trimmed.startsWith("google ")) query = input.slice(7).trim();
     else if (trimmed.startsWith("search web ")) query = input.slice(11).trim();
     else if (trimmed.startsWith("what is ")) query = input.slice(8).trim();
     else if (trimmed.startsWith("what's ")) query = input.slice(7).trim();
-    
+
     const url = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
     return JSON.stringify({ name: "search_web", payload: { url } });
   }
@@ -1418,12 +2046,12 @@ function parseTestCommand(input: string): string {
   // open X
   if (trimmed.startsWith("open ")) {
     const value = input.slice(5).trim();
-    
+
     // Check for URLs
     if (value.startsWith("http://") || value.startsWith("https://")) {
       return JSON.stringify({ name: "open_url", payload: { url: value } });
     }
-    
+
     // Check for "open X in web"
     const inWebMatch = value.match(/^(.+?)\s+in\s+web$/i);
     if (inWebMatch) {
@@ -1431,7 +2059,7 @@ function parseTestCommand(input: string): string {
       const url = `https://www.${searchTerm.toLowerCase()}.com`;
       return JSON.stringify({ name: "open_url", payload: { url } });
     }
-    
+
     return JSON.stringify({ name: "open_app", payload: { target: value } });
   }
 
@@ -1450,14 +2078,17 @@ function parseTestCommand(input: string): string {
   return JSON.stringify({ name: "unknown", payload: { text: input } });
 }
 
-function TestCommandsView({ 
-  testResults, 
+function TestCommandsView({
+  testResults,
   setTestResults,
   invokeAuthed,
-}: { 
-  testResults: TestCommandResult[], 
-  setTestResults: React.Dispatch<React.SetStateAction<TestCommandResult[]>>,
-  invokeAuthed: <T>(command: string, payload?: Record<string, unknown>) => Promise<T>,
+}: {
+  testResults: TestCommandResult[];
+  setTestResults: React.Dispatch<React.SetStateAction<TestCommandResult[]>>;
+  invokeAuthed: <T>(
+    command: string,
+    payload?: Record<string, unknown>,
+  ) => Promise<T>;
 }) {
   const [commandInput, setCommandInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -1549,7 +2180,7 @@ function TestCommandsView({
             Command Input
           </h3>
         </div>
-        
+
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           <textarea
             value={commandInput}
@@ -1569,8 +2200,14 @@ function TestCommandsView({
               }
             }}
           />
-          
-          <div style={{ display: "flex", gap: "12px", justifyContent: "space-between" }}>
+
+          <div
+            style={{
+              display: "flex",
+              gap: "12px",
+              justifyContent: "space-between",
+            }}
+          >
             <motion.button
               className="btn btn-primary"
               onClick={executeTestCommand}
@@ -1580,7 +2217,7 @@ function TestCommandsView({
             >
               {isLoading ? "Executing..." : "Execute Command"}
             </motion.button>
-            
+
             <div style={{ display: "flex", gap: "12px" }}>
               <motion.button
                 className="btn btn-secondary"
@@ -1591,7 +2228,7 @@ function TestCommandsView({
               >
                 🔔 Check Reminders
               </motion.button>
-              
+
               {testResults.length > 0 && (
                 <motion.button
                   className="btn btn-secondary"
@@ -1617,14 +2254,25 @@ function TestCommandsView({
             exit={{ opacity: 0 }}
           >
             <Beaker className="empty-state-icon" />
-            <p>No test results yet. Enter a command and click Execute to test.</p>
+            <p>
+              No test results yet. Enter a command and click Execute to test.
+            </p>
           </motion.div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            <h3 style={{ fontSize: "16px", fontWeight: 600, color: "var(--text-primary)", marginBottom: "12px" }}>
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: "12px" }}
+          >
+            <h3
+              style={{
+                fontSize: "16px",
+                fontWeight: 600,
+                color: "var(--text-primary)",
+                marginBottom: "12px",
+              }}
+            >
               Test Results ({testResults.length})
             </h3>
-            
+
             {testResults.map((result, index) => (
               <motion.div
                 key={result.id}
@@ -1635,17 +2283,50 @@ function TestCommandsView({
                 transition={{ delay: index * 0.05 }}
               >
                 <div style={{ marginBottom: "16px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "12px" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "start",
+                      marginBottom: "12px",
+                    }}
+                  >
                     <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: "14px", fontFamily: "monospace", color: "var(--accent-primary)", marginBottom: "8px", background: "var(--bg-primary)", padding: "10px 12px", borderRadius: "6px", wordBreak: "break-word" }}>
+                      <div
+                        style={{
+                          fontSize: "14px",
+                          fontFamily: "monospace",
+                          color: "var(--accent-primary)",
+                          marginBottom: "8px",
+                          background: "var(--bg-primary)",
+                          padding: "10px 12px",
+                          borderRadius: "6px",
+                          wordBreak: "break-word",
+                        }}
+                      >
                         {result.command}
                       </div>
-                      <div style={{ fontSize: "12px", color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: "16px" }}>
-                        <span>Duration: <strong style={{ color: "var(--text-primary)" }}>{result.response.duration}ms</strong></span>
+                      <div
+                        style={{
+                          fontSize: "12px",
+                          color: "var(--text-secondary)",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "16px",
+                        }}
+                      >
+                        <span>
+                          Duration:{" "}
+                          <strong style={{ color: "var(--text-primary)" }}>
+                            {result.response.duration}ms
+                          </strong>
+                        </span>
                         <span>{result.response.timestamp}</span>
                       </div>
                     </div>
-                    <span className={`badge ${result.response.success ? "badge-success" : "badge-error"}`}>
+                    <span
+                      className={`badge ${result.response.success ? "badge-success" : "badge-error"}`}
+                    >
                       {result.response.success ? "Success" : "Failed"}
                     </span>
                   </div>
@@ -1653,8 +2334,28 @@ function TestCommandsView({
 
                 {/* Response Message */}
                 <div style={{ marginBottom: "16px" }}>
-                  <h4 style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "6px", textTransform: "uppercase" }}>Message</h4>
-                  <div style={{ background: "var(--bg-primary)", padding: "12px", borderRadius: "6px", fontSize: "13px", color: "var(--text-primary)", lineHeight: "1.6", wordBreak: "break-word" }}>
+                  <h4
+                    style={{
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      color: "var(--text-secondary)",
+                      marginBottom: "6px",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    Message
+                  </h4>
+                  <div
+                    style={{
+                      background: "var(--bg-primary)",
+                      padding: "12px",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      color: "var(--text-primary)",
+                      lineHeight: "1.6",
+                      wordBreak: "break-word",
+                    }}
+                  >
                     {result.response.message}
                   </div>
                 </div>
@@ -1662,8 +2363,30 @@ function TestCommandsView({
                 {/* Response Data */}
                 {result.response.data && (
                   <div>
-                    <h4 style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "6px", textTransform: "uppercase" }}>Response Data</h4>
-                    <pre style={{ background: "var(--bg-primary)", padding: "12px", borderRadius: "6px", fontSize: "12px", color: "var(--accent-primary)", overflow: "auto", maxHeight: "200px", fontFamily: "monospace", margin: 0 }}>
+                    <h4
+                      style={{
+                        fontSize: "12px",
+                        fontWeight: 600,
+                        color: "var(--text-secondary)",
+                        marginBottom: "6px",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      Response Data
+                    </h4>
+                    <pre
+                      style={{
+                        background: "var(--bg-primary)",
+                        padding: "12px",
+                        borderRadius: "6px",
+                        fontSize: "12px",
+                        color: "var(--accent-primary)",
+                        overflow: "auto",
+                        maxHeight: "200px",
+                        fontFamily: "monospace",
+                        margin: 0,
+                      }}
+                    >
                       {typeof result.response.data === "string"
                         ? result.response.data
                         : JSON.stringify(result.response.data, null, 2)}

@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri_plugin_opener::OpenerExt;
-use tauri::{Manager, Emitter};
+use tauri::{Manager, Emitter, Listener};
 use rusqlite::Connection;
 use std::sync::Mutex;
 
@@ -18,6 +19,7 @@ mod memory_graph_repository;
 mod memory_intelligence_service;
 mod plugin_interface;
 mod plugin_registry;
+mod oauth;
 mod scheduler;
 mod worker;
 mod auth_service;
@@ -53,7 +55,7 @@ enum Intent {
     Remember { content: String },
     
     #[serde(rename = "recall_memory")]
-    RecallMemory,
+    RecallMemory {},
     
     #[serde(rename = "search_memory")]
     SearchMemory { keyword: String },
@@ -73,8 +75,36 @@ enum Intent {
     #[serde(rename = "kill_process")]
     KillProcess { process: String },
     
+    #[serde(rename = "list_calendar_events")]
+    ListCalendarEvents { period: String },
+
+    #[serde(rename = "create_calendar_event")]
+    CreateCalendarEvent {
+        title: String,
+        start_time: String,
+        duration_minutes: i64,
+    },
+    
+    #[serde(rename = "delete_calendar_event")]
+    DeleteCalendarEvent { query: String },
+    
+    #[serde(rename = "update_calendar_event")]
+    UpdateCalendarEvent { original_text: String },
+    
+    // System Control
+    #[serde(rename = "set_volume")]
+    SetVolume { level: Option<i32>, action: Option<String> },
+    #[serde(rename = "get_volume")]
+    GetVolume {},
+    #[serde(rename = "set_brightness")]
+    SetBrightness { level: i32 },
+    #[serde(rename = "get_brightness")]
+    GetBrightness {},
+    #[serde(rename = "system_control")]
+    SystemControl { command: String },
+    
     #[serde(rename = "list_apps")]
-    ListApps,
+    ListApps {},
     
     #[serde(rename = "unknown")]
     Unknown { text: String },
@@ -177,6 +207,16 @@ impl PermissionManager {
     
     fn allows(&self, capability: Capability) -> bool {
         self.allowed.contains(&capability)
+    }
+    
+    // Placeholder for an async initialization function, if needed in the future.
+    // The original instruction included this, but its context and implementation
+    // were unclear. Assuming it's meant to be a method of PermissionManager.
+    async fn initialize(&self, _config_json: Option<&str>) -> Result<(), String> {
+        // Placeholder for actual async initialization logic
+        // For now, it just returns Ok.
+        // If `validate_config` is an async function, it would be called here with `.await`.
+        Ok(())
     }
     
     fn check_permission(&self, capability: Capability) -> Result<(), String> {
@@ -385,16 +425,24 @@ fn get_active_plugins(
 }
 
 #[tauri::command]
-fn enable_plugin(
-    memory_store: tauri::State<MemoryStore>,
-    plugin_registry: tauri::State<plugin_registry::PluginRegistry>,
-    auth_config: tauri::State<AuthConfig>,
+async fn enable_plugin(
+    memory_store: tauri::State<'_, MemoryStore>,
+    plugin_registry: tauri::State<'_, plugin_registry::PluginRegistry>,
+    auth_config: tauri::State<'_, AuthConfig>,
     access_token: String,
     plugin_id: String,
 ) -> Result<plugin_registry::PluginRecord, String> {
     let _ = require_user_from_access_token(&access_token, &auth_config)?;
-    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-    plugin_registry::enable_plugin(&conn, &plugin_registry, &plugin_id)
+    
+    let plugin_record = {
+        let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        plugin_registry::set_plugin_enabled(&conn, &plugin_id, true)?;
+        plugin_registry::get_plugin(&conn, &plugin_registry, &plugin_id)?
+    };
+
+    plugin_registry::initialize_plugin(&plugin_registry, &plugin_id, plugin_record.config_json.as_deref()).await?;
+    
+    Ok(plugin_record)
 }
 
 #[tauri::command]
@@ -421,22 +469,33 @@ fn update_plugin_config(
 ) -> Result<plugin_registry::PluginRecord, String> {
     let _ = require_user_from_access_token(&access_token, &auth_config)?;
     let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-    plugin_registry::update_plugin_config(&conn, &plugin_registry, &plugin_id, config_json)
+    let config_val: serde_json::Value = serde_json::from_str(&config_json).map_err(|e| format!("Invalid JSON: {}", e))?;
+    plugin_registry::update_plugin_config(&conn, &plugin_registry, &plugin_id, &config_val)
 }
 
 #[tauri::command]
-fn execute_plugin_command(
-    memory_store: tauri::State<MemoryStore>,
-    plugin_registry: tauri::State<plugin_registry::PluginRegistry>,
-    auth_config: tauri::State<AuthConfig>,
+async fn execute_plugin_command(
+    memory_store: tauri::State<'_, MemoryStore>,
+    plugin_registry: tauri::State<'_, plugin_registry::PluginRegistry>,
+    auth_config: tauri::State<'_, AuthConfig>,
     access_token: String,
     plugin_id: String,
     command: String,
 ) -> Result<serde_json::Value, String> {
     let _ = require_user_from_access_token(&access_token, &auth_config)?;
-    let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-    plugin_registry::execute_plugin_command(&conn, &plugin_registry, &plugin_id, &command)
+    let (plugin_enabled, config_json) = {
+        let conn = memory_store.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let plugin = plugin_registry::get_plugin(&conn, &plugin_registry, &plugin_id)?;
+        (plugin.enabled, plugin.config_json)
+    };
+    
+    if !plugin_enabled {
+        return Err(format!("Plugin '{}' is disabled.", plugin_id));
+    }
+
+    plugin_registry::execute_plugin_command(&plugin_registry, &plugin_id, &command, config_json.as_deref()).await
 }
+
 
 #[derive(Deserialize)]
 #[allow(dead_code)]
@@ -444,14 +503,21 @@ struct ActionRequest {
     intent_json: String,  // JSON string deserializable into Intent enum
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct ActionResponse {
     success: bool,
     message: String,
     requires_confirmation: bool,
     fallback_action: Option<String>,
     fallback_value: Option<String>,
-    data: Option<Vec<String>>,
+    data: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct ChatResponse {
+    content: String,
+    action: Option<String>,
+    data: Option<serde_json::Value>,
 }
 
 #[cfg(target_os = "windows")]
@@ -1133,7 +1199,6 @@ fn sanitize_windows_app_name(app_name: &str) -> Result<String, String> {
 
 #[cfg(target_os = "windows")]
 fn launch_app(exe_path: &str) -> Result<(), String> {
-    // Validate path exists
     let path = std::path::Path::new(exe_path);
     if !path.exists() {
         return Err(format!("Executable path does not exist: {}", exe_path));
@@ -1345,15 +1410,16 @@ fn recall_memories(memory_store: &MemoryStore, user_id: &str) -> Result<Vec<Stri
 // Main command dispatcher with event emission and permission enforcement
 // Accepts typed Intent JSON, deserializes to enum, and dispatches safely.
 #[tauri::command]
-fn execute_action(
+async fn execute_action(
     intent_json: String,
     access_token: String,
     app_handle: tauri::AppHandle,
-    registry: tauri::State<AppRegistry>,
-    memory_store: tauri::State<MemoryStore>,
-    event_bus: tauri::State<EventBus>,
-    permissions: tauri::State<PermissionManager>,
-    auth_config: tauri::State<AuthConfig>,
+    registry: tauri::State<'_, AppRegistry>,
+    memory_store: tauri::State<'_, MemoryStore>,
+    event_bus: tauri::State<'_, EventBus>,
+    permissions: tauri::State<'_, PermissionManager>,
+    auth_config: tauri::State<'_, AuthConfig>,
+    plugin_registry: tauri::State<'_, plugin_registry::PluginRegistry>,
 ) -> Result<ActionResponse, String> {
     let start_time = std::time::Instant::now();
     let user_id = require_user_from_access_token(&access_token, &auth_config)?;
@@ -1371,21 +1437,30 @@ fn execute_action(
     
     // Extract intent name for telemetry
     let intent_name = match &intent {
-        Intent::ListApps => "list_apps",
+        Intent::ListApps {} => "list_apps",
         Intent::OpenApp { .. } => "open_app",
         Intent::OpenUrl { .. } => "open_url",
         Intent::SearchWeb { .. } => "search_web",
         Intent::KillProcess { .. } => "kill_process",
         Intent::Remember { .. } => "remember",
-        Intent::RecallMemory => "recall_memory",
+        Intent::RecallMemory {} => "recall_memory",
         Intent::SearchMemory { .. } => "search_memory",
         Intent::SetReminder { .. } => "set_reminder",
+        Intent::ListCalendarEvents { .. } => "list_calendar_events",
+        Intent::CreateCalendarEvent { .. } => "create_calendar_event",
+        Intent::DeleteCalendarEvent { .. } => "delete_calendar_event",
+        Intent::UpdateCalendarEvent { .. } => "update_calendar_event",
+        Intent::SetVolume { .. } => "set_volume",
+        Intent::GetVolume {} => "get_volume",
+        Intent::SetBrightness { .. } => "set_brightness",
+        Intent::GetBrightness {} => "get_brightness",
+        Intent::SystemControl { .. } => "system_control",
         Intent::Unknown { .. } => "unknown",
     };
     
     // Type-safe dispatch using enum matching (no string comparisons)
     let response = match intent {
-        Intent::ListApps => {
+        Intent::ListApps {} => {
             let names = registry.display_names.clone();
             let duration_ms = start_time.elapsed().as_millis();
             event_bus.emit(&Event::IntentExecuted {
@@ -1398,10 +1473,261 @@ fn execute_action(
                 requires_confirmation: false,
                 fallback_action: None,
                 fallback_value: None,
-                data: Some(names),
+                data: Some(json!(names)),
+            }
+        }
+
+        Intent::ListCalendarEvents { period } => {
+            let plugin_info = {
+                let conn = memory_store.conn.lock().map_err(|e| format!("Database lock poisoned: {}", e))?;
+                let active_plugins = plugin_registry::get_active_plugins(&conn, &plugin_registry).unwrap_or_default();
+                active_plugins.into_iter()
+                    .find(|p| p.capabilities.contains(&"fetch_events".to_string()))
+                    .map(|p| (p.id, p.name, p.config_json))
+            };
+
+            if let Some((plugin_id, plugin_name, config_json)) = plugin_info {
+                match plugin_registry::execute_plugin_command(&plugin_registry, &plugin_id, "fetch_events", config_json.as_deref()).await {
+                    Ok(data) => {
+                        let duration_ms = start_time.elapsed().as_millis();
+                        event_bus.emit(&Event::IntentExecuted {
+                            intent_name: "list_calendar_events".to_string(),
+                            duration_ms,
+                        });
+                        ActionResponse {
+                            success: true,
+                            message: format!("Fetched your {} schedule for {}", plugin_name, period),
+                            requires_confirmation: false,
+                            fallback_action: None,
+                            fallback_value: None,
+                            data: Some(data),
+                        }
+                    },
+                    Err(e) => {
+                        ActionResponse {
+                            success: false,
+                            message: format!("Failed to fetch calendar from {}: {}", plugin_name, e),
+                            requires_confirmation: false,
+                            fallback_action: None,
+                            fallback_value: None,
+                            data: None,
+                        }
+                    }
+                }
+            } else {
+                ActionResponse {
+                    success: false,
+                    message: "No active calendar plugins found. Please enable Google or Outlook Calendar in the Integrations panel.".to_string(),
+                    requires_confirmation: false,
+                    fallback_action: None,
+                    fallback_value: None,
+                    data: None,
+                }
+            }
+        }
+
+        Intent::CreateCalendarEvent { title, start_time: start_time_str, duration_minutes } => {
+            let plugin_info = {
+                let conn = memory_store.conn.lock().map_err(|e| format!("Database lock poisoned: {}", e))?;
+                let active_plugins = plugin_registry::get_active_plugins(&conn, &plugin_registry).unwrap_or_default();
+                active_plugins.into_iter()
+                    .find(|p| p.capabilities.contains(&"create calendar events".to_string()))
+                    .map(|p| (p.id, p.name, p.config_json))
+            };
+
+            if let Some((plugin_id, plugin_name, config_json)) = plugin_info {
+                let params = json!({
+                    "title": title,
+                    "start_time": start_time_str,
+                    "duration_minutes": duration_minutes
+                });
+                let cmd = format!("create_event:{}", params.to_string());
+                
+                match plugin_registry::execute_plugin_command(&plugin_registry, &plugin_id, &cmd, config_json.as_deref()).await {
+                    Ok(data) => {
+                        let duration_ms = start_time.elapsed().as_millis();
+                        event_bus.emit(&Event::IntentExecuted {
+                            intent_name: "create_calendar_event".to_string(),
+                            duration_ms,
+                        });
+                        ActionResponse {
+                            success: true,
+                            message: format!("Successfully created event '{}' on {}", title, plugin_name),
+                            requires_confirmation: false,
+                            fallback_action: None,
+                            fallback_value: None,
+                            data: Some(data),
+                        }
+                    },
+                    Err(e) => {
+                        ActionResponse {
+                            success: false,
+                            message: format!("Failed to create event on {}: {}", plugin_name, e),
+                            requires_confirmation: false,
+                            fallback_action: None,
+                            fallback_value: None,
+                            data: None,
+                        }
+                    }
+                }
+            } else {
+                ActionResponse {
+                    success: false,
+                    message: "No active calendar plugin found with creation capabilities.".to_string(),
+                    requires_confirmation: false,
+                    fallback_action: None,
+                    fallback_value: None,
+                    data: None,
+                }
             }
         }
         
+        Intent::DeleteCalendarEvent { query } => {
+            let plugin_info = {
+                let conn = memory_store.conn.lock().map_err(|e| format!("Database lock poisoned: {}", e))?;
+                let active_plugins = plugin_registry::get_active_plugins(&conn, &plugin_registry).unwrap_or_default();
+                active_plugins.into_iter()
+                    .find(|p| p.capabilities.contains(&"create calendar events".to_string())) // Same capability for write access
+                    .map(|p| (p.id, p.name, p.config_json))
+            };
+
+            if let Some((plugin_id, plugin_name, config_json)) = plugin_info {
+                let params = json!({ "query": query });
+                let cmd = format!("delete_event:{}", params.to_string());
+                
+                match plugin_registry::execute_plugin_command(&plugin_registry, &plugin_id, &cmd, config_json.as_deref()).await {
+                    Ok(_) => {
+                        ActionResponse {
+                            success: true,
+                            message: format!("Successfully deleted event matching '{}' on {}", query, plugin_name),
+                            requires_confirmation: false,
+                            fallback_action: None,
+                            fallback_value: None,
+                            data: None,
+                        }
+                    },
+                    Err(e) => {
+                        ActionResponse {
+                            success: false,
+                            message: format!("Failed to delete event on {}: {}", plugin_name, e),
+                            requires_confirmation: false,
+                            fallback_action: None,
+                            fallback_value: None,
+                            data: None,
+                        }
+                    }
+                }
+            } else {
+                ActionResponse { success: false, message: "No active calendar plugin found.".to_string(), ..Default::default() }
+            }
+        }
+
+        Intent::UpdateCalendarEvent { original_text } => {
+            let plugin_info = {
+                let conn = memory_store.conn.lock().map_err(|e| format!("Database lock poisoned: {}", e))?;
+                let active_plugins = plugin_registry::get_active_plugins(&conn, &plugin_registry).unwrap_or_default();
+                active_plugins.into_iter()
+                    .find(|p| p.capabilities.contains(&"create calendar events".to_string()))
+                    .map(|p| (p.id, p.name, p.config_json))
+            };
+
+            if let Some((plugin_id, plugin_name, config_json)) = plugin_info {
+                let params = json!({ "original_text": original_text });
+                let cmd = format!("update_event:{}", params.to_string());
+                
+                match plugin_registry::execute_plugin_command(&plugin_registry, &plugin_id, &cmd, config_json.as_deref()).await {
+                    Ok(_) => {
+                        ActionResponse {
+                            success: true,
+                            message: format!("Successfully updated event on {}", plugin_name),
+                            requires_confirmation: false,
+                            fallback_action: None,
+                            fallback_value: None,
+                            data: None,
+                        }
+                    },
+                    Err(e) => {
+                        ActionResponse {
+                            success: false,
+                            message: format!("Failed to update event on {}: {}", plugin_name, e),
+                            requires_confirmation: false,
+                            fallback_action: None,
+                            fallback_value: None,
+                            data: None,
+                        }
+                    }
+                }
+            } else {
+                ActionResponse { success: false, message: "No active calendar plugin found.".to_string(), ..Default::default() }
+            }
+        }
+
+        Intent::SetVolume { level, action } => {
+            let params = json!({ "level": level, "action": action });
+            let cmd = format!("set_volume:{}", params.to_string());
+            match plugin_registry::execute_plugin_command(&plugin_registry, "system_plugin", &cmd, None).await {
+                Ok(data) => ActionResponse {
+                    success: true,
+                    message: "Volume adjusted successfully.".to_string(),
+                    data: Some(data),
+                    ..Default::default()
+                },
+                Err(e) => ActionResponse { success: false, message: format!("Failed to adjust volume: {}", e), ..Default::default() }
+            }
+        }
+
+        Intent::GetVolume {} => {
+            match plugin_registry::execute_plugin_command(&plugin_registry, "system_plugin", "get_volume", None).await {
+                Ok(data) => ActionResponse {
+                    success: true,
+                    message: data.get("message").and_then(|v| v.as_str()).unwrap_or("I can change your volume, but I currently cannot read the exact volume level directly.").to_string(),
+                    data: Some(data),
+                    ..Default::default()
+                },
+                Err(e) => ActionResponse { success: false, message: format!("Failed to get volume: {}", e), ..Default::default() }
+            }
+        }
+
+        Intent::SetBrightness { level } => {
+            let params = json!({ "level": level });
+            let cmd = format!("set_brightness:{}", params.to_string());
+            match plugin_registry::execute_plugin_command(&plugin_registry, "system_plugin", &cmd, None).await {
+                Ok(data) => ActionResponse {
+                    success: true,
+                    message: format!("Brightness set to {}%.", level),
+                    data: Some(data),
+                    ..Default::default()
+                },
+                Err(e) => ActionResponse { success: false, message: format!("Failed to set brightness: {}", e), ..Default::default() }
+            }
+        }
+
+        Intent::GetBrightness {} => {
+            match plugin_registry::execute_plugin_command(&plugin_registry, "system_plugin", "get_brightness", None).await {
+                Ok(data) => ActionResponse {
+                    success: true,
+                    message: data.get("message").and_then(|v| v.as_str()).unwrap_or("Current brightness retrieved.").to_string(),
+                    data: Some(data),
+                    ..Default::default()
+                },
+                Err(e) => ActionResponse { success: false, message: format!("Failed to get brightness: {}", e), ..Default::default() }
+            }
+        }
+
+        Intent::SystemControl { command } => {
+            let params = json!({ "command": command });
+            let cmd = format!("system_control:{}", params.to_string());
+            match plugin_registry::execute_plugin_command(&plugin_registry, "system_plugin", &cmd, None).await {
+                Ok(data) => ActionResponse {
+                    success: true,
+                    message: format!("Executed system command: {}", command),
+                    data: Some(data),
+                    ..Default::default()
+                },
+                Err(e) => ActionResponse { success: false, message: format!("Failed to execute system command: {}", e), ..Default::default() }
+            }
+        }
+
         Intent::OpenApp { target } => {
             // Check permission before executing
             if let Err(perm_err) = permissions.check_permission(Capability::OpenApp) {
@@ -1657,7 +1983,7 @@ fn execute_action(
             }
         },
         
-        Intent::RecallMemory => {
+        Intent::RecallMemory {} => {
             // Check permission before executing
             if let Err(perm_err) = permissions.check_permission(Capability::MemoryRead) {
                 event_bus.emit(&Event::ErrorOccurred(perm_err.clone()));
@@ -1684,7 +2010,7 @@ fn execute_action(
                         requires_confirmation: false,
                         fallback_action: None,
                         fallback_value: None,
-                        data: Some(memories),
+                        data: Some(json!(memories)),
                     }
                 },
                 Err(err) => {
@@ -1728,7 +2054,7 @@ fn execute_action(
                         requires_confirmation: false,
                         fallback_action: None,
                         fallback_value: None,
-                        data: Some(memories),
+                        data: Some(json!(memories)),
                     }
                 },
                 Err(err) => {
@@ -2146,9 +2472,136 @@ fn log_intent_dispatch(intent_json: &str, success: bool) {
 /// # Returns
 /// * `Ok(String)` - The AI assistant's response
 /// * `Err(String)` - Error message if something goes wrong
+#[derive(Serialize)]
+struct InterpretRequest {
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct InterpretResponse {
+    action: String,
+    value: String,
+    confidence: f64,
+}
+
 #[tauri::command]
-async fn chat_with_ai(message: String) -> Result<String, String> {
-    ai::handle_chat(message).await
+async fn chat_with_ai(
+    message: String,
+    access_token: String,
+    app_handle: tauri::AppHandle,
+    registry: tauri::State<'_, AppRegistry>,
+    memory_store: tauri::State<'_, MemoryStore>,
+    event_bus: tauri::State<'_, EventBus>,
+    permissions: tauri::State<'_, PermissionManager>,
+    auth_config: tauri::State<'_, AuthConfig>,
+    plugin_registry: tauri::State<'_, plugin_registry::PluginRegistry>,
+) -> Result<ChatResponse, String> {
+    // 1. Try interpretation via Brain (FastAPI)
+    let client = reqwest::Client::new();
+    let interpret_res = client
+        .post("http://127.0.0.1:8000/interpret")
+        .json(&InterpretRequest { text: message.clone() })
+        .send()
+        .await;
+
+    if let Ok(res) = interpret_res {
+        if let Ok(interpret_data) = res.json::<InterpretResponse>().await {
+            // If it's a known non-unknown action with reasonable confidence
+            if interpret_data.action != "unknown" && interpret_data.confidence > 0.7 {
+                // Determine the correct payload structure based on the action
+                let payload = if interpret_data.action == "search_web" {
+                    // If it's a search, ensure we have a 'url' field. 
+                    // If the value doesn't look like a URL, make it a Google search.
+                    let val = interpret_data.value.trim();
+                    if val.starts_with("http://") || val.starts_with("https://") {
+                        json!({ "url": val })
+                    } else {
+                        let query = urlencoding::encode(val);
+                        json!({ "url": format!("https://www.google.com/search?q={}", query) })
+                    }
+                } else {
+                    // For other actions, try to parse as JSON, fallback to { "value": ... }
+                    serde_json::from_str::<Value>(&interpret_data.value)
+                        .unwrap_or(json!({ "value": interpret_data.value }))
+                };
+
+                let intent_json = json!({
+                    "name": interpret_data.action,
+                    "payload": payload
+                }).to_string();
+
+                // Execute the action, but fallback to Gemini if it fails (e.g. JSON schema mismatch)
+                match execute_action(
+                    intent_json,
+                    access_token,
+                    app_handle,
+                    registry,
+                    memory_store,
+                    event_bus,
+                    permissions,
+                    auth_config,
+                    plugin_registry,
+                ).await {
+                    Ok(action_res) => {
+                        return Ok(ChatResponse {
+                            content: action_res.message,
+                            action: Some(interpret_data.action),
+                            data: action_res.data,
+                        });
+                    }
+                    Err(e) => {
+                        println!("⚠️ Action execution failed, falling back to Gemini: {}", e);
+                        // Fall through to LLM
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Fallback to Gemini LLM
+    match ai::handle_chat(message).await {
+        Ok(ai_content) => Ok(ChatResponse {
+            content: ai_content,
+            action: None,
+            data: None,
+        }),
+        Err(err) => {
+            let friendly_message = if err.contains("API_KEY_INVALID") || err.contains("not valid") {
+                "⚠️ Gemini API key is missing or invalid. \n\nTo use general chat, please add a valid API key to your `.env` file. \n\n**Note:** You can still use the Outlook Calendar integration by saying things like \"show my schedule\" (handled locally).".to_string()
+            } else {
+                format!("⚠️ AI Chat is currently unavailable: {}. \n\nYou can still use local commands like \"show my calendar\".", err)
+            };
+            
+            Ok(ChatResponse {
+                content: friendly_message,
+                action: None,
+                data: None,
+            })
+        }
+    }
+}
+
+#[tauri::command]
+async fn authenticate_plugin(
+    app_handle: tauri::AppHandle,
+    plugin_registry: tauri::State<'_, plugin_registry::PluginRegistry>,
+    oauth_manager: tauri::State<'_, oauth::OAuthManager>,
+    plugin_id: String,
+) -> Result<String, String> {
+    let handler = plugin_registry
+        .handler(&plugin_id)
+        .ok_or_else(|| format!("Unknown plugin: {}", plugin_id))?;
+
+    let auth_url = handler.authenticate(&app_handle).await?;
+    
+    // Start the local listener
+    oauth_manager.start_callback_listener(app_handle.clone(), plugin_id);
+    
+    // Open the browser
+    match app_handle.opener().open_url(&auth_url, None::<String>) {
+        Ok(_) => Ok("Opening browser for authentication...".to_string()),
+        Err(e) => Err(format!("Failed to open browser: {}", e)),
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2273,16 +2726,28 @@ pub fn run() {
             let plugin_registry_for_events = plugin_registry.clone();
             event_bus_for_setup.register(move |event| {
                 if let Some(plugin_event) = plugin_registry::plugin_event_from_core_event(event) {
-                    match Connection::open(&db_path_for_plugins) {
-                        Ok(conn) => {
-                            if let Err(error) = plugin_registry::dispatch_event(&conn, &plugin_registry_for_events, &plugin_event) {
-                                eprintln!("⚠️  Plugin event dispatch failed: {}", error);
+                    let db_path_clone = db_path_for_plugins.clone();
+                    let registry_clone = plugin_registry_for_events.clone();
+                    let event_clone = plugin_event.clone();
+                    
+                    tauri::async_runtime::spawn(async move {
+                        // Open connection, fetch active plugins, and close connection before awaiting dispatch_event
+                        let active_plugins_res = (|| -> Result<Vec<plugin_registry::PluginRecord>, String> {
+                            let conn = Connection::open(&db_path_clone).map_err(|e| e.to_string())?;
+                            plugin_registry::get_active_plugins(&conn, &registry_clone)
+                        })();
+
+                        match active_plugins_res {
+                            Ok(plugins) => {
+                                if let Err(error) = plugin_registry::dispatch_event(&registry_clone, plugins, &event_clone).await {
+                                    eprintln!("⚠️  Plugin event dispatch failed: {}", error);
+                                }
+                            }
+                            Err(error) => {
+                                eprintln!("⚠️  Plugin event dispatch DB open or fetch failed: {}", error);
                             }
                         }
-                        Err(error) => {
-                            eprintln!("⚠️  Plugin event dispatch DB open failed: {}", error);
-                        }
-                    }
+                    });
                 }
             });
             
@@ -2300,6 +2765,48 @@ pub fn run() {
 
             app.manage(memory_store);
             app.manage(AuthConfig { jwt_secret });
+
+            // 3. Start OAuth callback listener
+            let manager = oauth::OAuthManager::new();
+            let app_handle_for_oauth = app.handle().clone();
+            
+            app.handle().listen("oauth_code_received", move |event| {
+                let payload_str = event.payload();
+                let payload: serde_json::Value = serde_json::from_str(payload_str).unwrap_or(json!({}));
+                let plugin_id = payload["plugin_id"].as_str().unwrap_or_default().to_string();
+                let code = payload["code"].as_str().unwrap_or_default().to_string();
+                let app_handle_clone = app_handle_for_oauth.clone();
+                
+                tauri::async_runtime::spawn(async move {
+                    if plugin_id.is_empty() || code.is_empty() { return; }
+                    
+                    let memory_store = app_handle_clone.state::<MemoryStore>();
+                    let plugin_registry = app_handle_clone.state::<plugin_registry::PluginRegistry>();
+                    
+                    let provider = if plugin_id == "google_calendar_plugin" { "google" } else { "outlook" };
+                    let redirect_uri = "http://localhost:1421";
+                    
+                    match oauth::exchange_code_for_tokens(provider, &code, redirect_uri).await {
+                        Ok(tokens) => {
+                            let conn = memory_store.conn.lock().unwrap();
+                            let current_config_str = plugin_registry::get_plugin_config(&conn, &plugin_id).unwrap_or_default();
+                            let mut config: serde_json::Value = serde_json::from_str(&current_config_str.unwrap_or_else(|| "{}".to_string())).unwrap_or(json!({}));
+                            
+                            config["tokens"] = json!(tokens);
+                            
+                            if let Err(e) = plugin_registry::update_plugin_config(&conn, &plugin_registry, &plugin_id, &config) {
+                                eprintln!("⚠️  Failed to save plugin tokens: {}", e);
+                            } else {
+                                println!("✓ Successfully authenticated {}!", plugin_id);
+                                let _ = app_handle_clone.emit("plugin_authenticated", json!({ "plugin_id": plugin_id }));
+                            }
+                        },
+                        Err(e) => eprintln!("⚠️  OAuth exchange failed: {}", e),
+                    }
+                });
+            });
+
+            app.manage(manager);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2329,6 +2836,7 @@ pub fn run() {
             track_memory_access,
             get_graph_data,
             get_memory_graph,
+            authenticate_plugin,
             chat_with_ai
         ])
         .run(tauri::generate_context!())

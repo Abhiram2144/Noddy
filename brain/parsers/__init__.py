@@ -19,6 +19,9 @@ from parsers.base import BaseParser
 from parsers.memory_parser import MemoryParser
 from parsers.search_parser import SearchParser
 from parsers.app_parser import AppParser
+from parsers.calendar_parser import CalendarParser
+from parsers.system_parser import SystemParser
+from parsers.llm_parser import LLMParser
 from domain import Intent
 from utils import normalize_input
 from config import get_logger
@@ -47,8 +50,11 @@ class ParserRegistry:
         # Core parsers - always loaded, always in this priority order
         self.core_parsers: List[BaseParser] = [
             MemoryParser(),
+            CalendarParser(),
+            SystemParser(),
             SearchParser(),
             AppParser(),
+            LLMParser(),
         ]
         
         # Plugin parsers - loaded dynamically
@@ -138,8 +144,23 @@ class ParserRegistry:
         
         # Try each parser in order (core first, then plugins)
         for parser in self.parsers:
+            # Skip LLMParser for now, we'll use it as a final fallback
+            if isinstance(parser, LLMParser):
+                continue
+                
             if parser.can_parse(normalized):
-                return parser.parse(text)
+                intent = parser.parse(text)
+                # If we have a high-confidence non-unknown intent, use it
+                if intent.name != "unknown" and intent.confidence >= 0.8:
+                    return intent
+        
+        # If no high-confidence rule-based intent found, use LLMParser
+        llm_parser = next((p for p in self.parsers if isinstance(p, LLMParser)), None)
+        if llm_parser:
+            logger.info(f"Falling back to dynamic LLM interpretation for: '{text}' (LLMParser found)")
+            return llm_parser.parse(text)
+        else:
+            logger.warning(f"LLMParser NOT FOUND in parsers list! Current parsers: {[type(p).__name__ for p in self.parsers]}")
         
         # No parser matched - return unknown intent
         logger.info(f"Parsed: '{text}' → action=unknown (no parser matched)")

@@ -73,8 +73,8 @@ def intent_to_response(intent: Intent) -> InterpretResponse:
         value = payload.get("target", "")
     elif name == "kill_process":
         value = payload.get("process", "")
-    elif name in ("list_apps", "recall_memory"):
-        value = ""
+    elif name in ("list_apps", "recall_memory", "list_calendar_events"):
+        value = json.dumps(payload)
     elif name == "unknown":
         value = payload.get("text", "")
     else:
@@ -162,6 +162,19 @@ async def interpret(request: InterpretRequest) -> InterpretResponse:
 async def health_check():
     """Health check endpoint"""
     return {"status": "ok", "version": "0.2.0"}
+
+
+@app.get("/system/volume")
+async def get_system_volume():
+    """Get exact master volume level via pycaw."""
+    try:
+        from pycaw.pycaw import AudioUtilities
+        ev = AudioUtilities.GetSpeakers().EndpointVolume
+        level = int(ev.GetMasterVolumeLevelScalar() * 100)
+        return {"status": "success", "level": level}
+    except Exception as e:
+        logger.error(f"Failed to read volume: {e}")
+        return {"status": "error", "message": str(e)}
 
 
 @app.get("/")

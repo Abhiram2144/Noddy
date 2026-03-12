@@ -2,15 +2,20 @@ import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { motion, AnimatePresence } from "framer-motion";
 import { Send, Bot, User, Sparkles } from "lucide-react";
+import { useAuth } from "../auth/AuthContext";
+import CalendarView from "./CalendarView";
 
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
+  action?: string;
+  data?: any;
 }
 
 export function ChatView() {
+  const { getAccessToken } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -46,23 +51,27 @@ export function ChatView() {
 
     try {
       // Call Tauri backend
-      const response = await invoke<string>("chat_with_ai", {
+      const accessToken = await getAccessToken();
+      const response = await invoke<any>("chat_with_ai", {
         message: trimmedMessage,
+        accessToken,
       });
 
       // Create assistant message
       const assistantMessage: Message = {
         id: `assistant-${Date.now()}`,
         role: "assistant",
-        content: response,
+        content: response.content,
         timestamp: new Date(),
+        action: response.action,
+        data: response.data,
       };
 
       // Add assistant message to chat
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (error) {
       console.error("Error sending message:", error);
-      
+
       // Create error message
       const errorMessage: Message = {
         id: `error-${Date.now()}`,
@@ -96,20 +105,51 @@ export function ChatView() {
     >
       {/* Header */}
       <div className="panel-header">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
           <div>
             <h1 className="panel-title">AI Chat</h1>
-            <p className="panel-subtitle">Chat with Noddy AI powered by Gemini 1.5 Flash</p>
+            <p className="panel-subtitle">
+              Chat with Noddy AI powered by Gemini 1.5 Flash
+            </p>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--text-secondary)", fontSize: "13px" }}>
-            <Sparkles style={{ width: "16px", height: "16px", color: "var(--accent-primary)" }} />
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              color: "var(--text-secondary)",
+              fontSize: "13px",
+            }}
+          >
+            <Sparkles
+              style={{
+                width: "16px",
+                height: "16px",
+                color: "var(--accent-primary)",
+              }}
+            />
             <span>{messages.length} messages</span>
           </div>
         </div>
       </div>
 
       {/* Messages Area */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "24px", display: "flex", flexDirection: "column", gap: "16px" }}>
+      <div
+        style={{
+          flex: 1,
+          overflowY: "auto",
+          padding: "24px",
+          display: "flex",
+          flexDirection: "column",
+          gap: "16px",
+        }}
+      >
         {messages.length === 0 && (
           <motion.div
             className="empty-state"
@@ -117,8 +157,22 @@ export function ChatView() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.4 }}
           >
-            <Bot style={{ width: "48px", height: "48px", color: "var(--text-tertiary)", marginBottom: "16px" }} />
-            <p style={{ fontSize: "18px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "8px" }}>
+            <Bot
+              style={{
+                width: "48px",
+                height: "48px",
+                color: "var(--text-tertiary)",
+                marginBottom: "16px",
+              }}
+            />
+            <p
+              style={{
+                fontSize: "18px",
+                fontWeight: 600,
+                color: "var(--text-secondary)",
+                marginBottom: "8px",
+              }}
+            >
               Start a conversation with Noddy AI
             </p>
             <p style={{ fontSize: "14px", color: "var(--text-tertiary)" }}>
@@ -138,48 +192,83 @@ export function ChatView() {
               style={{
                 display: "flex",
                 gap: "12px",
-                justifyContent: message.role === "user" ? "flex-end" : "flex-start",
+                justifyContent:
+                  message.role === "user" ? "flex-end" : "flex-start",
               }}
             >
               {message.role === "assistant" && (
-                <div style={{ 
-                  width: "32px", 
-                  height: "32px", 
-                  borderRadius: "8px", 
-                  background: "var(--bg-elevated)", 
-                  border: "1px solid var(--border-medium)",
-                  display: "flex", 
-                  alignItems: "center", 
-                  justifyContent: "center",
-                  flexShrink: 0,
-                }}>
-                  <Bot style={{ width: "18px", height: "18px", color: "var(--accent-primary)" }} />
+                <div
+                  style={{
+                    width: "32px",
+                    height: "32px",
+                    borderRadius: "8px",
+                    background: "var(--bg-elevated)",
+                    border: "1px solid var(--border-medium)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <Bot
+                    style={{
+                      width: "18px",
+                      height: "18px",
+                      color: "var(--accent-primary)",
+                    }}
+                  />
                 </div>
               )}
 
-              <div style={{
-                maxWidth: "70%",
-                padding: "12px 16px",
-                borderRadius: "12px",
-                background: message.role === "user" ? "var(--accent-primary)" : "var(--bg-elevated)",
-                border: message.role === "user" ? "none" : "1px solid var(--border-medium)",
-                color: message.role === "user" ? "#ffffff" : "var(--text-primary)",
-              }}>
-                <p style={{ 
-                  fontSize: "14px", 
-                  lineHeight: "1.6", 
-                  whiteSpace: "pre-wrap", 
-                  wordBreak: "break-word",
-                  margin: 0,
-                }}>
+              <div
+                style={{
+                  maxWidth: "70%",
+                  padding: "12px 16px",
+                  borderRadius: "12px",
+                  background:
+                    message.role === "user"
+                      ? "var(--accent-primary)"
+                      : "var(--bg-elevated)",
+                  border:
+                    message.role === "user"
+                      ? "none"
+                      : "1px solid var(--border-medium)",
+                  color:
+                    message.role === "user" ? "#ffffff" : "var(--text-primary)",
+                }}
+              >
+                <p
+                  style={{
+                    fontSize: "14px",
+                    lineHeight: "1.6",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    margin: 0,
+                  }}
+                >
                   {message.content}
                 </p>
-                <p style={{ 
-                  fontSize: "11px", 
-                  marginTop: "8px", 
-                  opacity: 0.6,
-                  margin: "8px 0 0 0",
-                }}>
+
+                {message.role === "assistant" &&
+                  message.action === "list_calendar_events" &&
+                  message.data && (
+                    <div style={{ marginTop: "12px" }}>
+                      <CalendarView
+                        events={message.data.events || []}
+                        provider={message.data.provider}
+                        metadata={message.data.metadata}
+                      />
+                    </div>
+                  )}
+
+                <p
+                  style={{
+                    fontSize: "11px",
+                    marginTop: "8px",
+                    opacity: 0.6,
+                    margin: "8px 0 0 0",
+                  }}
+                >
                   {message.timestamp.toLocaleTimeString([], {
                     hour: "2-digit",
                     minute: "2-digit",
@@ -188,17 +277,21 @@ export function ChatView() {
               </div>
 
               {message.role === "user" && (
-                <div style={{ 
-                  width: "32px", 
-                  height: "32px", 
-                  borderRadius: "8px", 
-                  background: "var(--accent-primary)", 
-                  display: "flex", 
-                  alignItems: "center", 
-                  justifyContent: "center",
-                  flexShrink: 0,
-                }}>
-                  <User style={{ width: "18px", height: "18px", color: "#ffffff" }} />
+                <div
+                  style={{
+                    width: "32px",
+                    height: "32px",
+                    borderRadius: "8px",
+                    background: "var(--accent-primary)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <User
+                    style={{ width: "18px", height: "18px", color: "#ffffff" }}
+                  />
                 </div>
               )}
             </motion.div>
@@ -209,31 +302,73 @@ export function ChatView() {
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            style={{ display: "flex", gap: "12px", justifyContent: "flex-start" }}
+            style={{
+              display: "flex",
+              gap: "12px",
+              justifyContent: "flex-start",
+            }}
           >
-            <div style={{ 
-              width: "32px", 
-              height: "32px", 
-              borderRadius: "8px", 
-              background: "var(--bg-elevated)", 
-              border: "1px solid var(--border-medium)",
-              display: "flex", 
-              alignItems: "center", 
-              justifyContent: "center",
-              flexShrink: 0,
-            }}>
-              <Bot style={{ width: "18px", height: "18px", color: "var(--accent-primary)" }} />
+            <div
+              style={{
+                width: "32px",
+                height: "32px",
+                borderRadius: "8px",
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border-medium)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+            >
+              <Bot
+                style={{
+                  width: "18px",
+                  height: "18px",
+                  color: "var(--accent-primary)",
+                }}
+              />
             </div>
-            <div style={{
-              padding: "12px 16px",
-              borderRadius: "12px",
-              background: "var(--bg-elevated)",
-              border: "1px solid var(--border-medium)",
-            }}>
-              <div style={{ display: "flex", gap: "4px", alignItems: "center" }}>
-                <span style={{ width: "6px", height: "6px", background: "var(--accent-primary)", borderRadius: "50%", animation: "bounce 1.4s infinite ease-in-out both", animationDelay: "-0.32s" }} />
-                <span style={{ width: "6px", height: "6px", background: "var(--accent-primary)", borderRadius: "50%", animation: "bounce 1.4s infinite ease-in-out both", animationDelay: "-0.16s" }} />
-                <span style={{ width: "6px", height: "6px", background: "var(--accent-primary)", borderRadius: "50%", animation: "bounce 1.4s infinite ease-in-out both" }} />
+            <div
+              style={{
+                padding: "12px 16px",
+                borderRadius: "12px",
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border-medium)",
+              }}
+            >
+              <div
+                style={{ display: "flex", gap: "4px", alignItems: "center" }}
+              >
+                <span
+                  style={{
+                    width: "6px",
+                    height: "6px",
+                    background: "var(--accent-primary)",
+                    borderRadius: "50%",
+                    animation: "bounce 1.4s infinite ease-in-out both",
+                    animationDelay: "-0.32s",
+                  }}
+                />
+                <span
+                  style={{
+                    width: "6px",
+                    height: "6px",
+                    background: "var(--accent-primary)",
+                    borderRadius: "50%",
+                    animation: "bounce 1.4s infinite ease-in-out both",
+                    animationDelay: "-0.16s",
+                  }}
+                />
+                <span
+                  style={{
+                    width: "6px",
+                    height: "6px",
+                    background: "var(--accent-primary)",
+                    borderRadius: "50%",
+                    animation: "bounce 1.4s infinite ease-in-out both",
+                  }}
+                />
               </div>
             </div>
           </motion.div>
@@ -243,11 +378,13 @@ export function ChatView() {
       </div>
 
       {/* Input Area */}
-      <div style={{ 
-        padding: "20px 24px", 
-        borderTop: "1px solid var(--border-subtle)",
-        background: "var(--bg-secondary)",
-      }}>
+      <div
+        style={{
+          padding: "20px 24px",
+          borderTop: "1px solid var(--border-subtle)",
+          background: "var(--bg-secondary)",
+        }}
+      >
         <div style={{ display: "flex", gap: "12px" }}>
           <input
             ref={inputRef}
